@@ -406,7 +406,7 @@ def suggest_based_on_last_token(token, stmt):
     if token_v == 'set':
         return (Column(table_refs=stmt.get_tables(),
                        local_tables=stmt.local_tables),)
-    if token_v in ('select', 'where', 'having', 'by', 'distinct'):
+    if token_v in ('select', 'where', 'having', 'order by', 'distinct'):
         # Check for a table alias or schema qualification
         parent = stmt.identifier.get_parent_name() \
             if (stmt.identifier and stmt.identifier.get_parent_name()) else []
