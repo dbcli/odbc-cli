@@ -6,6 +6,7 @@ from logging import getLogger
 from re import sub
 from threading import Lock, Event, Thread
 from enum import IntEnum
+from .dbmetadata import DbMetadata
 
 formatter = TabularOutputFormatter()
 
@@ -37,6 +38,7 @@ class sqlConnection:
         self.password = password
         self.status = connStatus.DISCONNECTED
         self.logger = getLogger(__name__)
+        self.dbmetadata = DbMetadata()
         self._quotechar = None
         self._search_escapechar = None
         self._search_escapepattern = None
@@ -92,13 +94,20 @@ class sqlConnection:
         if self._search_escapepattern is None:
             # https://stackoverflow.com/questions/2428117/casting-raw-strings-python
             self._search_escapepattern = \
-                (self.search_escapechar).encode("unicode-escape").decode() + "\\1"
+                (self.search_escapechar).encode("unicode-escape").decode()
 
         return self._search_escapepattern
 
     def sanitize_search_string(self, term) -> str:
         if term is not None and len(term):
-            res = sub("(_|%)", self.search_escapepattern, term)
+            res = sub("(_|%)", self.search_escapepattern + "\\1", term)
+        else:
+            res = term
+        return res
+
+    def unsanitize_search_string(self, term) -> str:
+        if term is not None and len(term):
+            res = sub(self.search_escapepattern, "", term)
         else:
             res = term
         return res
@@ -164,6 +173,7 @@ class sqlConnection:
                 self._execution_status = executionStatus.OK
                 self.query = query
             except DatabaseError as e:
+                self.status = connStatus.IDLE
                 self._execution_status = executionStatus.FAIL
                 self._execution_err = str(e)
                 self.logger.warning("Execution error: %s", str(e))
@@ -361,12 +371,17 @@ class MSSQL(sqlConnection):
               "'db_denydatawriter')"
 
         if catalog is None and self.current_catalog():
-            catalog = self.sanitize_search_string(self.current_catalog())
+            catalog_local = self.current_catalog()
+        else:
+            # We are going to be outright executing, versus
+            # using the ODBC API.
+            # let's make sure there is nothing escaped here
+            catalog_local = self.unsanitize_search_string(catalog)
 
-        if catalog:
+        if catalog_local:
             try:
                 self.logger.debug("Calling list_schemas...")
-                crsr = self.execute(qry.format(catalog = catalog))
+                crsr = self.execute(qry.format(catalog = catalog_local))
                 res = crsr.fetchall()
                 crsr.close()
                 self.logger.debug("Calling list_schemas: done")

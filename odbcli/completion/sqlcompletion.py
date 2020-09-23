@@ -17,6 +17,7 @@ except NameError:
     string_types = str         # Python 3
 
 
+Blank = namedtuple('Blank', [])
 Special = namedtuple('Special', [])
 NamedQuery = namedtuple('NamedQuery', [])
 Database = namedtuple('Database', [])
@@ -547,6 +548,8 @@ def suggest_based_on_last_token(token, stmt):
         return tuple(suggestions)
     if token_v in {'alter', 'create', 'drop'}:
         return (Keyword(token_v.upper()),)
+    if token_v in {'limit'}:
+        return (Blank(),)
     if token.is_keyword:
         # token is a keyword we haven't implemented any special handling for
         # go backwards in the query until we find one we do recognize

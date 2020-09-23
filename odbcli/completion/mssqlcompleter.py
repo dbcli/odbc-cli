@@ -12,7 +12,7 @@ import operator
 from collections import namedtuple, defaultdict, OrderedDict
 from prompt_toolkit.completion import Completer, Completion, PathCompleter
 from prompt_toolkit.document import Document
-from .sqlcompletion import (FromClauseItem, suggest_type, Special, NamedQuery,
+from .sqlcompletion import (Blank, FromClauseItem, suggest_type, Special, NamedQuery,
                                              Database, Schema, Table, Function, Column, View,
                                              Keyword, Datatype, Alias, Path, JoinCondition, Join)
 from .parseutils.meta import ColumnMetadata, ForeignKey
@@ -20,7 +20,6 @@ from .parseutils.utils import last_word
 from .parseutils.tables import TableReference
 from .mssqlliterals.main import get_literals
 from .prioritization import PrevalenceCounter
-# from mssqlcli.util import decode
 
 Match = namedtuple('Match', ['completion', 'priority'])
 
@@ -115,8 +114,6 @@ class MssqlCompleter(Completer):
         self.name_pattern = re.compile(r"^[_a-z][_a-z0-9\$]*$")
 
         self.databases = []
-        self.dbmetadata = {'table': {}, 'view': {}, 'functions': {},
-                           'datatypes': {}}
         self.search_path = []
         self.casing = {}
 
@@ -162,23 +159,6 @@ class MssqlCompleter(Completer):
         # OG: Unclear what the roll of all_completions is
         # self.all_completions.update(additional_keywords)
 
-    def extend_schemas(self, schemas):
-
-        # schemas is a list of schema names
-        schemas = self.escaped_names(schemas)
-        # OG: seems like this is done in for loop below, no?
-        # metadata = self.dbmetadata['tables']
-        #for schema in schemas:
-        #    metadata[schema] = {}
-
-        # dbmetadata.values() are the 'tables' and 'functions' dicts
-        for metadata in self.dbmetadata.values():
-            for schema in schemas:
-                metadata[schema] = {}
-
-        # OG: Unclear what the roll of all_completions is
-        # self.all_completions.update(schemas)
-
     def extend_casing(self, words):
         """ extend casing data
 
@@ -187,67 +167,23 @@ class MssqlCompleter(Completer):
         # casing should be a dict {lowercasename:PreferredCasingName}
         self.casing = dict((word.lower(), word) for word in words)
 
-    def extend_relations(self, data, kind):
-        """extend metadata for tables or views.
-
-        :param data: list of (catalog_name, schema_name, rel_name) tuples
-        :param kind: either 'tables' or 'views'
-
-        :return:
-
-        """
-
-        data = [self.escaped_names(d) for d in data]
-
-        # dbmetadata['tables']['schema_name']['table_name'] should be an
-        # OrderedDict {column_name:ColumnMetaData}.
-        metadata = self.dbmetadata[kind]
-        for catalog, schema, relname in data:
-            try:
-                metadata[catalog][schema][relname] = OrderedDict()
-            except KeyError:
-                self.logger.error('%r %r listed in unrecognized schema %r',
-                              kind, relname, schema)
-
-    def extend_columns(self, column_data, kind):
-        """extend column metadata.
-
-        :param column_data: list of (catalog_name, schema_name, rel_name, column_name,
-        column_type, has_default, default) tuples
-        :param kind: either 'tables' or 'views'
-
-        :return:
-
-        """
-        metadata = self.dbmetadata[kind]
-        for catalog, schema, relname, colname, datatype, default in column_data:
-            (catalog, schema, relname, colname) = self.escaped_names(
-                [catalog, schema, relname, colname])
-            column = ColumnMetadata(
-                name=colname,
-                datatype=datatype,
-                has_default=default,
-                default=default
-            )
-            metadata[catalog][schema][relname][colname] = column
-            # OG: Unclear what the roll of all_completions is
-            # self.all_completions.add(colname)
-
     def extend_functions(self, func_data):
 
         # func_data is a list of function metadata namedtuples
 
         # dbmetadata['schema_name']['functions']['function_name'] should return
         # the function metadata namedtuple for the corresponding function
-        metadata = self.dbmetadata['functions']
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
+        submeta = metadata['function']
 
         for f in func_data:
             schema, func = self.escaped_names([f.schema_name, f.func_name])
 
-            if func in metadata[schema]:
-                metadata[schema][func].append(f)
+            if func in submeta[schema]:
+                submeta[schema][func].append(f)
             else:
-                metadata[schema][func] = [f]
+                submeta[schema][func] = [f]
 
             # OG: Unclear what the roll of all_completions is
             # self.all_completions.add(func)
@@ -259,10 +195,12 @@ class MssqlCompleter(Completer):
         # This is used when suggesting functions, to avoid the latency that would result
         # if we'd recalculate the arg lists each time we suggest functions (in
         # large DBs)
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
         self._arg_list_cache = {
             usage: {
                 meta: self._arg_list(meta, usage)
-                for sch, funcs in self.dbmetadata['functions'].items()
+                for sch, funcs in metadata['function'].items()
                 for func, metas in funcs.items()
                 for meta in metas
             }
@@ -277,15 +215,18 @@ class MssqlCompleter(Completer):
 
         # These are added as a list of ForeignKey namedtuples to the
         # ColumnMetadata namedtuple for both the child and parent
-        meta = self.dbmetadata['table']
+        # OG: This needs catalog facelift
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
+        submeta = metadata['table']
 
         for fk in fk_data:
             e = self.escaped_names
             parentschema, childschema = e([fk.parentschema, fk.childschema])
             parenttable, childtable = e([fk.parenttable, fk.childtable])
             childcol, parcol = e([fk.childcolumn, fk.parentcolumn])
-            childcolmeta = meta[childschema][childtable][childcol]
-            parcolmeta = meta[parentschema][parenttable][parcol]
+            childcolmeta = submeta[childschema][childtable][childcol]
+            parcolmeta = submeta[parentschema][parenttable][parcol]
             fk = ForeignKey(parentschema, parenttable, parcol,
                             childschema, childtable, childcol)
             childcolmeta.foreignkeys.append((fk))
@@ -296,11 +237,12 @@ class MssqlCompleter(Completer):
         # dbmetadata['datatypes'][schema_name][type_name] should store type
         # metadata, such as composite type field names. Currently, we're not
         # storing any metadata beyond typename, so just store None
-        meta = self.dbmetadata['datatypes']
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
 
         for t in type_data:
             schema, type_name = self.escaped_names(t)
-            meta[schema][type_name] = None
+            metadata["datatype"][schema][type_name] = None
             # OG: Unclear what the roll of all_completions is
             # self.all_completions.add(type_name)
 
@@ -319,8 +261,8 @@ class MssqlCompleter(Completer):
         self.databases = []
         self.special_commands = []
         self.search_path = []
-        self.dbmetadata = {'table': {}, 'view': {}, 'functions': {},
-                           'datatypes': {}} 
+        conn = self.my_app.active_conn
+        conn.dbmetadata.reset_metadata()
         # OG: Unclear what the roll of all_completions is
         #self.all_completions = set(self.keywords + self.functions)
 
@@ -711,17 +653,19 @@ class MssqlCompleter(Completer):
 
     def get_schema_matches(self, suggestion, word_before_cursor):
         conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
+        submeta = metadata['table']
         if suggestion.parent:
             catalog_u = self.unescape_name(suggestion.parent)
         else:
             catalog_u = conn.current_catalog()
 
         catalog_e = self.escape_name(catalog_u)
-        cats = self.dbmetadata['table'].keys()
+        cats = submeta.keys()
         # OG: Note here, if there is even a single schema in [catalog_e].keys()
         # we'll happily return a potentially incomplete result set.
-        if catalog_e in cats and self.dbmetadata['table'][catalog_e]:
-            schema_names_e = self.dbmetadata['table'][catalog_e].keys()
+        if catalog_e in cats and submeta[catalog_e]:
+            schema_names_e = submeta[catalog_e].keys()
         else: 
             if suggestion.parent:
                 # Looking for schemas in a specified catalog
@@ -744,15 +688,13 @@ class MssqlCompleter(Completer):
                 schema_names = set(conn.list_schemas())
             
             schema_names_e = self.escaped_names(schema_names)
-            if len(schema_names_e):
-                for metadata in self.dbmetadata.values():
-                    metadata[catalog_e] = {}
-                    for schema_e in schema_names_e:
-                        self.logger.debug("get_schema_matches: Creating dict %s.%s", catalog_e, schema_e)
-                        metadata[catalog_e][schema_e] = {}
+            conn.dbmetadata.extend_schemas(catalog = catalog_e, names = schema_names_e)
 
         return self.find_matches(
             word_before_cursor, schema_names_e, meta='schema')
+
+    def get_blank_item_matches(self, suggestion, word_before_cursor):
+        return []
 
     def get_from_clause_item_matches(self, suggestion, word_before_cursor):
         alias = self.generate_aliases
@@ -867,13 +809,12 @@ class MssqlCompleter(Completer):
                                  meta='table alias')
 
     def get_database_matches(self, _, word_before_cursor):
-        catalogs = self.dbmetadata["table"].keys()
-        if not catalogs and (self.my_app.active_conn.connected()):
-            catalogs = self.escaped_names(
-                    self.my_app.active_conn.list_catalogs())
-            for reltype in ('table', 'view'):
-                self.logger.debug("get_database_matches: Populating catalogs %s", reltype)
-                self.dbmetadata[reltype].update(dict.fromkeys(catalogs, {}))
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
+        catalogs = metadata["table"].keys()
+        if not catalogs and (conn.connected()):
+            catalogs = self.escaped_names(conn.list_catalogs())
+            conn.dbmetadata.extend_catalogs(catalogs)
         return self.find_matches(word_before_cursor, catalogs,
                                  meta='catalog')
 
@@ -934,6 +875,7 @@ class MssqlCompleter(Completer):
 #            word_before_cursor, named_queries.list(), meta='named query')
 
     suggestion_matchers = {
+        Blank: get_blank_item_matches,
         FromClauseItem: get_from_clause_item_matches,
         JoinCondition: get_join_condition_matches,
         Join: get_join_matches,
@@ -959,9 +901,10 @@ class MssqlCompleter(Completer):
         :return: {TableReference:{colname:ColumnMetaData}}
 
         """
+        conn = my_app.active_conn
         ctes = dict((normalize_ref(t.name), t.columns) for t in local_tbls)
         columns = OrderedDict()
-        meta = self.dbmetadata
+        metadata = conn.dbmetadata.data
 
         def addcols(schema, rel, alias, reltype, cols):
             tbl = TableReference(schema, rel, alias, reltype == 'functions')
@@ -982,14 +925,14 @@ class MssqlCompleter(Completer):
                 if tbl.is_function:
                     # Return column names from a set-returning function
                     # Get an array of FunctionMetadata objects
-                    functions = meta['functions'].get(schema, {}).get(relname)
+                    functions = metadata['function'].get(schema, {}).get(relname)
                     for func in (functions or []):
                         # func is a FunctionMetadata object
                         cols = func.fields()
                         addcols(schema, relname, tbl.alias, 'functions', cols)
                 else:
                     for reltype in ('table', 'view'):
-                        cols = meta[reltype].get(schema, {}).get(relname)
+                        cols = metadata[reltype].get(schema, {}).get(relname)
                         if cols:
                             cols = cols.values()
                             addcols(schema, relname, tbl.alias, reltype, cols)
@@ -1061,11 +1004,13 @@ class MssqlCompleter(Completer):
         :param schema is the schema qualification input by the user (if any)
 
         """
-        metadata = self.dbmetadata[obj_typ]
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
+        submeta = metadata[obj_typ]
         if schema:
             schema = self.escape_name(schema)
-            return [schema] if schema in metadata else []
-        return self.search_path if self.search_path_filter else metadata.keys()
+            return [schema] if schema in submeta else []
+        return self.search_path if self.search_path_filter else submeta.keys()
 
     def _maybe_schema(self, schema, parent):
         return None if parent or schema in self.search_path else schema
@@ -1076,6 +1021,8 @@ class MssqlCompleter(Completer):
         :param schema is the schema qualification input by the user (if any)
 
         """
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
 
         return [
             SchemaObject(
@@ -1083,7 +1030,7 @@ class MssqlCompleter(Completer):
                 schema=(self._maybe_schema(schema=sch, parent=schema))
             )
             for sch in self._get_schemas(obj_type, schema)
-            for obj in self.dbmetadata[obj_type][sch].keys()
+            for obj in metadata[obj_type][sch].keys()
         ]
 
     def populate_objects(self, catalog, schema, obj_type):
@@ -1095,7 +1042,8 @@ class MssqlCompleter(Completer):
         ret = []
         obj_names = []
         conn = self.my_app.active_conn
-        metadata = self.dbmetadata[obj_type]
+        metadata = conn.dbmetadata.data
+        submeta = metadata[obj_type]
         if catalog is None and schema is None:
             # Query free tables, no catalog or schema (think SQLite)
             # Trying to communicate here empty string, "" to
@@ -1137,11 +1085,11 @@ class MssqlCompleter(Completer):
         catalog_e = self.escape_name(self.unescape_name(catalog))
         schema_e = self.escape_name(self.unescape_name(schema))
 
-        if catalog_e in metadata.keys() and \
-                schema_e in metadata[catalog_e].keys() and \
-                metadata[catalog_e][schema_e]:
+        if catalog_e in submeta.keys() and \
+                schema_e in submeta[catalog_e].keys() and \
+                submeta[catalog_e][schema_e]:
             self.logger.debug("populate_objects(%s): Found %s.%s metadata", obj_type, catalog_e, schema_e)
-            obj_names = metadata[catalog_e][schema_e].keys()
+            obj_names = submeta[catalog_e][schema_e].keys()
             for name_e in obj_names:
                 ret.append(
                     SchemaObject(
@@ -1170,10 +1118,8 @@ class MssqlCompleter(Completer):
                 )
                 obj_names.append(name_e)
             self.logger.debug("populate_objects(%s): Query complete %s.%s", obj_type, catalog_e, schema_e)
-            if catalog_e in metadata.keys() and \
-                    schema_e in metadata[catalog_e].keys():
-                self.logger.debug("populate_objects(%s): Populating objects %s.%s", obj_type, catalog_e, schema_e)
-                metadata[catalog_e][schema_e].update(dict.fromkeys(obj_names, {}))
+            conn.dbmetadata.extend_objects(catalog = catalog_e, schema = schema_e,
+                    names = obj_names, obj_type = obj_type)
         return ret
 
     def populate_functions(self, schema, filter_func):
@@ -1185,6 +1131,8 @@ class MssqlCompleter(Completer):
 
         """
 
+        conn = self.my_app.active_conn
+        metadata = conn.dbmetadata.data
         # Because of multiple dispatch, we can have multiple functions
         # with the same name, which is why `for meta in metas` is necessary
         # in the comprehensions below
@@ -1194,8 +1142,8 @@ class MssqlCompleter(Completer):
                 schema=(self._maybe_schema(schema=sch, parent=schema)),
                 meta=meta
             )
-            for sch in self._get_schemas('functions', schema)
-            for (func, metas) in self.dbmetadata['functions'][sch].items()
+            for sch in self._get_schemas('function', schema)
+            for (func, metas) in metadata['function'][sch].items()
             for meta in metas
             if filter_func(meta)
         ]
