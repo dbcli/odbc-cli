@@ -7,11 +7,13 @@
 from __future__ import print_function, unicode_literals
 import logging
 import re
+from typing import Callable
 from itertools import count, chain
 import operator
 from collections import namedtuple, defaultdict, OrderedDict
 from prompt_toolkit.completion import Completer, Completion, PathCompleter
 from prompt_toolkit.document import Document
+from ..conn import sqlConnection
 from .sqlcompletion import (Blank, FromClauseItem, suggest_type, Special, NamedQuery,
                                              Database, Schema, Table, Function, Column, View,
                                              Keyword, Datatype, Alias, Path, JoinCondition, Join)
@@ -74,12 +76,12 @@ class MssqlCompleter(Completer):
 
     def __init__(
             self,
-            my_app: "sqlApp",
+            get_conn: Callable[[], sqlConnection],
             smart_completion=True,
             settings=None):
         super(MssqlCompleter, self).__init__()
         self.smart_completion = smart_completion
-        self.my_app = my_app
+        self._get_conn = get_conn
         self.prioritizer = PrevalenceCounter()
         settings = settings or {}
         self.signature_arg_style = settings.get(
@@ -126,11 +128,15 @@ class MssqlCompleter(Completer):
         self.logger = logging.getLogger(__name__)
         self.logger.debug("Completer instantiated")
 
+    @property
+    def active_conn(self) -> sqlConnection:
+        return self._get_conn()
+
     def escape_name(self, name):
         # OG: double quotation here, probably needs to be something that
         # can be configured
-        if name and self.my_app.active_conn is not None:
-            qtchar = self.my_app.active_conn.quotechar
+        if name and self.active_conn is not None:
+            qtchar = self.active_conn.quotechar
             name = (qtchar + "%s" + qtchar) % name
 
         return name
@@ -140,8 +146,8 @@ class MssqlCompleter(Completer):
 
     def unescape_name(self, name):
         """ Unquote a string."""
-        if self.my_app.active_conn is not None:
-            qtchar = self.my_app.active_conn.quotechar
+        if self.active_conn is not None:
+            qtchar = self.active_conn.quotechar
             if name and name[0] == qtchar and name[-1] == qtchar:
                 name = name[1:-1]
 
@@ -173,7 +179,7 @@ class MssqlCompleter(Completer):
 
         # dbmetadata['schema_name']['functions']['function_name'] should return
         # the function metadata namedtuple for the corresponding function
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         submeta = metadata['function']
 
@@ -195,7 +201,7 @@ class MssqlCompleter(Completer):
         # This is used when suggesting functions, to avoid the latency that would result
         # if we'd recalculate the arg lists each time we suggest functions (in
         # large DBs)
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         self._arg_list_cache = {
             usage: {
@@ -216,7 +222,7 @@ class MssqlCompleter(Completer):
         # These are added as a list of ForeignKey namedtuples to the
         # ColumnMetadata namedtuple for both the child and parent
         # OG: This needs catalog facelift
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         submeta = metadata['table']
 
@@ -237,7 +243,7 @@ class MssqlCompleter(Completer):
         # dbmetadata['datatypes'][schema_name][type_name] should store type
         # metadata, such as composite type field names. Currently, we're not
         # storing any metadata beyond typename, so just store None
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
 
         for t in type_data:
@@ -261,7 +267,7 @@ class MssqlCompleter(Completer):
         self.databases = []
         self.special_commands = []
         self.search_path = []
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         conn.dbmetadata.reset_metadata()
         # OG: Unclear what the roll of all_completions is
         #self.all_completions = set(self.keywords + self.functions)
@@ -652,7 +658,7 @@ class MssqlCompleter(Completer):
         return matches
 
     def get_schema_matches(self, suggestion, word_before_cursor):
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         submeta = metadata['table']
         if suggestion.parent:
@@ -809,7 +815,7 @@ class MssqlCompleter(Completer):
                                  meta='table alias')
 
     def get_database_matches(self, _, word_before_cursor):
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         catalogs = metadata["table"].keys()
         if not catalogs and (conn.connected()):
@@ -901,7 +907,7 @@ class MssqlCompleter(Completer):
         :return: {TableReference:{colname:ColumnMetaData}}
 
         """
-        conn = my_app.active_conn
+        conn = self.active_conn
         ctes = dict((normalize_ref(t.name), t.columns) for t in local_tbls)
         columns = OrderedDict()
         metadata = conn.dbmetadata.data
@@ -958,7 +964,7 @@ class MssqlCompleter(Completer):
             if tbl.catalog:
                 catalog_u = self.unescape_name(tbl.catalog)
             else:
-                catalog_u = self.my_app.active_conn.current_catalog()
+                catalog_u = self.active_conn.current_catalog()
 
             # TODO: What if no schema? Possible in some DBMS
             if tbl.schema:
@@ -980,7 +986,7 @@ class MssqlCompleter(Completer):
                 #    cols = func.fields()
                 #    addcols(schema, relname, tbl.alias, 'functions', cols)
             else:
-                conn = self.my_app.active_conn
+                conn = self.active_conn
                 # Per SQLColumns spec: CatalogName cannot contain a string search pattern
                 res = conn.find_columns(
                         catalog = catalog_u,
@@ -1004,7 +1010,7 @@ class MssqlCompleter(Completer):
         :param schema is the schema qualification input by the user (if any)
 
         """
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         submeta = metadata[obj_typ]
         if schema:
@@ -1021,7 +1027,7 @@ class MssqlCompleter(Completer):
         :param schema is the schema qualification input by the user (if any)
 
         """
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
 
         return [
@@ -1041,7 +1047,7 @@ class MssqlCompleter(Completer):
         """
         ret = []
         obj_names = []
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         submeta = metadata[obj_type]
         if catalog is None and schema is None:
@@ -1131,7 +1137,7 @@ class MssqlCompleter(Completer):
 
         """
 
-        conn = self.my_app.active_conn
+        conn = self.active_conn
         metadata = conn.dbmetadata.data
         # Because of multiple dispatch, we can have multiple functions
         # with the same name, which is why `for meta in metas` is necessary

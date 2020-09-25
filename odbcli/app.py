@@ -47,7 +47,7 @@ class sqlApp:
         self.show_login_prompt: bool = False
         self.show_preview: bool = False
         self.show_disconnect_dialog: bool = False
-        self.active_conn = None
+        self._active_conn = None
         self.obj_list = []
         dsns = list(datasources().keys())
         if len(dsns) < 1:
@@ -63,9 +63,17 @@ class sqlApp:
         # Loop over side-bar when moving past the element on the bottom
         self.obj_list[len(self.obj_list) - 1].next_object = self.obj_list[0]
         self._selected_object = self.obj_list[0]
-        self.completer = MssqlCompleter(smart_completion=True, my_app = self)
+        self.completer = MssqlCompleter(smart_completion = True, get_conn = lambda: self.active_conn)
 
         self.application = self._create_application()
+
+    @property
+    def active_conn(self) -> sqlConnection:
+        return self._active_conn
+
+    @active_conn.setter
+    def active_conn(self, conn: sqlConnection) -> None:
+        self._active_conn = conn
 
     @property
     def selected_object(self) -> myDBObject:
@@ -243,7 +251,7 @@ class sqlApp:
             if type(obj).__name__ == "myDBConn" and obj.conn.connected():
                 # OG: some thread locking may be needed here
                 self.completer.reset_completions()
-                self.active_conn = obj.conn
+                self._active_conn = obj.conn
             elif type(obj).__name__ == "myDBTable":
                 self.show_preview = True
                 self.show_sidebar = False

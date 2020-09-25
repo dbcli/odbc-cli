@@ -206,9 +206,7 @@ class sqlAppLayout:
                 tempfile_suffix = ".py",
                 multiline = MultilineFilter(self.my_app),
                 history = hist,
-                completer = DynamicCompleter(
-                    lambda: ThreadedCompleter(self.my_app.completer)),
-#                    lambda: self.my_app.completer),
+                completer = ThreadedCompleter(self.my_app.completer),
                 auto_suggest = ThreadedAutoSuggest(AutoSuggestFromHistory()),
                 complete_while_typing = Condition(
                     lambda: self.my_app.active_conn is not None
