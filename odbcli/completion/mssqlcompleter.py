@@ -264,8 +264,11 @@ class MssqlCompleter(Completer):
         self.search_path = self.escaped_names(search_path)
 
     def reset_completions(self):
+        # databases at this point is not used
         self.databases = []
+        # special_commands at this point is not used
         self.special_commands = []
+        # search_path at this point is not used
         self.search_path = []
         conn = self.active_conn
         conn.dbmetadata.reset_metadata()
@@ -668,6 +671,7 @@ class MssqlCompleter(Completer):
 
         catalog_e = self.escape_name(catalog_u)
         cats = submeta.keys()
+        self.logger.debug("get_schema_matches: parent %s", suggestion.parent)
         # OG: Note here, if there is even a single schema in [catalog_e].keys()
         # we'll happily return a potentially incomplete result set.
         if catalog_e in cats and submeta[catalog_e]:

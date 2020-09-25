@@ -8,6 +8,7 @@ def disconnect_dialog(my_app: "sqlApp"):
     def yes_handler() -> None:
         obj = my_app.selected_object
         obj.conn.close()
+        my_app.completer.reset_completions()
         if my_app.active_conn is obj.conn:
             my_app.active_conn = None
         my_app.show_disconnect_dialog = False

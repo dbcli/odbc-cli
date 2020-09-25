@@ -29,7 +29,6 @@ def login_prompt(my_app: "sqlApp"):
             obj.conn = newConn
             my_app.active_conn = obj.conn
             # OG some thread locking may be needed here
-            my_app.completer.reset_completions()
             obj.expand()
         except ConnectError as e:
             msgLabel.text = "Connect failed"

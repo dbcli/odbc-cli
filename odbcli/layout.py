@@ -23,7 +23,7 @@ from os.path import expanduser
 from .sidebar import sql_sidebar, sql_sidebar_help, show_sidebar_button_info, sql_sidebar_navigation
 from .loginprompt import login_prompt
 from .disconnect_dialog import disconnect_dialog
-from .preview import preview_element
+from .preview import PreviewElement
 from .filters import ShowLoginPrompt, ShowSidebar, MultilineFilter
 from .utils import if_mousedown
 from .conn import connStatus
@@ -234,8 +234,9 @@ class sqlAppLayout:
                 scroll_offsets=ScrollOffsets(bottom = 1, left = 4, right = 4)
             )
 
+        preview_element = PreviewElement(self.my_app)
         self.lprompt = login_prompt(self.my_app)
-        self.preview = preview_element(self.my_app)
+        self.preview = preview_element.create_container()
         self.disconnect_dialog = disconnect_dialog(self.my_app)
         container = HSplit([
             VSplit([
@@ -259,6 +260,7 @@ class sqlAppLayout:
                         Float(
                             content = self.preview,
                             ),
+                        preview_element.create_completion_float(),
                         Float(
                             content = self.disconnect_dialog,
                             ),

@@ -87,6 +87,10 @@ def extract_table_identifiers(token_stream, allow_functions=True):
         else:
             schema_name = None
             catalog_name = None
+        # TODO: this business below needs help
+        # for one we need to apply this logic to catalog_name
+        # then the logic around name_quoted = quote_count > 2 obviously
+        # doesn't work.  Finally, quotechar needs to be customized
         schema_quoted = schema_name and item.value[0] == '"'
         if schema_name and not schema_quoted:
             schema_name = schema_name.lower()
