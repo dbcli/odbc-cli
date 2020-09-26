@@ -9,14 +9,42 @@ from prompt_toolkit.widgets import Button, TextArea, SearchToolbar, Box, Shadow,
 from prompt_toolkit.layout.containers import Window, VSplit, HSplit, ConditionalContainer, FloatContainer, Float
 from prompt_toolkit.filters import Condition, is_done
 from prompt_toolkit.completion import Completer, Completion, ThreadedCompleter, CompleteEvent
+from prompt_toolkit.history import History, FileHistory, ThreadedHistory
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory, ThreadedAutoSuggest, AutoSuggest, Suggestion
 from cyanodbc import ConnectError, DatabaseError
 from cli_helpers.tabular_output import TabularOutputFormatter
 from functools import partial
-from typing import Callable, Iterable
+from typing import Callable, Iterable, List, Optional
+from logging import getLogger
+from os.path import expanduser
 from .completion.mssqlcompleter import MssqlCompleter
 from .filters import ShowPreview
 from .conn import connWrappers, connStatus, executionStatus
-from logging import getLogger
+from .config import config_location, ensure_dir_exists
+
+def object_to_identifier(obj: "myDBObject") -> str:
+    # TODO: Verify connected
+    sql_conn = obj.conn
+    catalog = None
+    schema = None
+    if obj.parent is not None:
+        if type(obj.parent).__name__ == "myDBSchema":
+            schema = obj.parent.name
+        elif type(obj.parent).__name__ == "myDBCatalog":
+            catalog = obj.parent.name
+        if obj.parent.parent is not None:
+            if type(obj.parent.parent).__name__ == "myDBCatalog":
+                catalog = obj.parent.parent.name
+
+    if catalog:
+        catalog =  (sql_conn.quotechar + "%s" + sql_conn.quotechar) % catalog
+    if schema:
+        schema =  (sql_conn.quotechar + "%s" + sql_conn.quotechar) % schema
+    name = (sql_conn.quotechar + "%s" + sql_conn.quotechar) % obj.name
+    identifier = ".".join(list(filter(None, [catalog, schema, name])))
+
+    return identifier
+
 
 class PreviewCompleter(Completer):
     """ Wraps prompt_toolkit.Completer.  The buffer that this completer is
@@ -37,24 +65,7 @@ class PreviewCompleter(Completer):
     ) -> Iterable[Completion]:
         obj = self.my_app.selected_object
         sql_conn = obj.conn
-        catalog = None
-        schema = None
-        # TODO: Verify connected
-        if obj.parent is not None:
-            if type(obj.parent).__name__ == "myDBSchema":
-                schema = obj.parent.name
-            elif type(obj.parent).__name__ == "myDBCatalog":
-                catalog = obj.parent.name
-            if obj.parent.parent is not None:
-                if type(obj.parent.parent).__name__ == "myDBCatalog":
-                    catalog = obj.parent.parent.name
-
-        if catalog:
-            catalog =  (sql_conn.quotechar + "%s" + sql_conn.quotechar) % catalog
-        if schema:
-            schema =  (sql_conn.quotechar + "%s" + sql_conn.quotechar) % schema
-        name = (sql_conn.quotechar + "%s" + sql_conn.quotechar) % obj.name
-        identifier = ".".join(list(filter(None, [catalog, schema, name])))
+        identifier = object_to_identifier(obj)
         query = sql_conn.preview_query(
                 table = identifier,
                 filter_query = document.text,
@@ -63,6 +74,61 @@ class PreviewCompleter(Completer):
         new_document = Document(text = query,
                 cursor_position = query.find(document.text) + document.cursor_position)
         return self.completer.get_completions(new_document, complete_event)
+
+class PreviewHistory(FileHistory):
+    def __init__(self, filename: str, my_app: "sqlApp") -> None:
+        self.my_app = my_app
+        super().__init__(filename)
+
+    def store_string(self, string: str) -> None:
+        """ Store filtering query in history file by
+            adding the "[identifier]: " prefix
+        """
+        obj = self.my_app.selected_object
+        identifier = object_to_identifier(obj)
+        super().store_string(identifier + ": " + string)
+
+class PreviewSuggestFromHistory(AutoSuggest):
+    """
+        Give suggestions based on the lines in the history.
+    """
+    def __init__(self, my_app: "sqlApp") -> None:
+        self.my_app = my_app
+        super().__init__
+
+    def get_suggestion(
+            self, buffer: "Buffer", document: Document
+    ) -> Optional[Suggestion]:
+        """
+            When looking for most recent suggestion look for one
+            starting with the "[identifier]: " prefix
+        """
+        history = buffer.history
+
+        # Consider only the last line for the suggestion.
+        text = document.text.rsplit("\n", 1)[-1]
+        # Only create a suggestion when this is not an empty line.
+        if text.strip():
+            obj = self.my_app.selected_object
+            prefix = object_to_identifier(obj) + ": "
+            # Find first matching line in history.
+            for string in reversed(list(history.get_strings())):
+                for line in reversed(string.splitlines()):
+                    loc = line.find(prefix)
+                    # Add one character for a space after SELECT identifier
+                    if loc >= 0 and line[loc + len(prefix):].startswith(text):
+                        return Suggestion(line[loc + len(prefix) + len(text) :])
+
+        return None
+
+class PreviewBuffer(Buffer):
+    def history_forward(self, count: int = 1) -> None:
+        """ Disable searching through history on up/down arrow """
+        return None
+    def history_backward(self, count: int = 1) -> None:
+        """ Disable searching through history on up/down arrow """
+        return None
+
 
 class PreviewElement:
     """ Class to create the preview element.  It contains two main methods:
@@ -86,11 +152,22 @@ class PreviewElement:
                     smart_completion = True,
                     get_conn = lambda: self.my_app.selected_object.conn))
 
-        self.input_buffer = Buffer(
+        history_file = config_location() + 'preview_history'
+        ensure_dir_exists(history_file)
+        hist = PreviewHistory(
+                my_app = self.my_app,
+                filename = expanduser(history_file))
+
+        self.input_buffer = PreviewBuffer(
                 name = "previewbuffer",
                 tempfile_suffix = ".sql",
-#                completer = ThreadedCompleter(self.completer),
-                completer = self.completer,
+                history = ThreadedHistory(hist),
+                auto_suggest =
+                    ThreadedAutoSuggest(PreviewSuggestFromHistory(my_app)),
+                completer = ThreadedCompleter(self.completer),
+#                history = hist,
+#                auto_suggest = PreviewSuggestFromHistory(my_app),
+#                completer = self.completer,
                 complete_while_typing = Condition(
                     lambda: self.my_app.selected_object is not None and self.my_app.selected_object.conn.connected()
                 ),
@@ -161,25 +238,10 @@ class PreviewElement:
             """
             obj = self.my_app.selected_object
             sql_conn = obj.conn
-            catalog = None
-            schema = None
-            # TODO: Verify connected
-            if obj.parent is not None:
-                if type(obj.parent).__name__ == "myDBSchema":
-                    schema = obj.parent.name
-                elif type(obj.parent).__name__ == "myDBCatalog":
-                    catalog = obj.parent.name
-                if obj.parent.parent is not None:
-                    if type(obj.parent.parent).__name__ == "myDBCatalog":
-                        catalog = obj.parent.parent.name
-
-            if catalog:
-                catalog =  (sql_conn.quotechar + "%s" + sql_conn.quotechar) % catalog
-            if schema:
-                schema =  (sql_conn.quotechar + "%s" + sql_conn.quotechar) % schema
-            name = (sql_conn.quotechar + "%s" + sql_conn.quotechar) % obj.name
-            identifier = ".".join(list(filter(None, [catalog, schema, name])))
-            query = sql_conn.preview_query(table = identifier, filter_query = buff.text,
+            identifier = object_to_identifier(obj)
+            query = sql_conn.preview_query(
+                    table = identifier,
+                    filter_query = buff.text,
                     limit = self.my_app.preview_limit_rows)
 
             func = partial(refresh_results,
