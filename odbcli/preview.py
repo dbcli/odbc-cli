@@ -303,7 +303,7 @@ class PreviewElement:
 
         frame = Shadow(
                 body = Frame(
-                    title = "Table Preview",
+                    title = lambda: "Preview: " + self.my_app.selected_object.name,
                     body = container,
                     style="class:dialog.body",
                     width = D(preferred = 180, min = 30),
