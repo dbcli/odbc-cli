@@ -219,6 +219,8 @@ class myDBConn(myDBObject):
                     otype = "Catalog",
                     parent = self,
                     level = self.level + 1) for row in rows]
+                self.conn.dbmetadata.extend_catalogs(
+                        self.conn.escape_names(rows))
         else:
             schemas = []
             res = self.conn.find_tables(
@@ -237,14 +239,30 @@ class myDBConn(myDBObject):
                     otype = "Schema",
                     parent = self,
                     level = self.level + 1) for schema in schemas]
+                self.conn.dbmetadata.extend_schemas(catalog = "",
+                        names = self.conn.escape_names(schemas))
             else:
-                lst = [myDBTable(
+                tables = []
+                views = []
+                lst = []
+                for table in res:
+                    if table.type.lower() == 'table':
+                        tables.append(table.name)
+                    if table.type.lower() == 'view':
+                        views.append(table.name)
+                    lst.append(myDBTable(
                     my_app = self.my_app,
                     conn = self.conn,
                     name = table.name,
                     otype = table.type,
                     parent = self,
-                    level = self.level + 1) for table in res]
+                    level = self.level + 1))
+                    self.conn.dbmetadata.extend_objects(catalog = "",
+                            schema = "", names = self.conn.escape_names(tables),
+                            obj_type = "table")
+                    self.conn.dbmetadata.extend_objects(catalog = "",
+                            schema = "", names = self.conn.escape_names(views),
+                            obj_type = "view")
         if len(lst):
             self.add_children(list_obj = lst)
         return None
