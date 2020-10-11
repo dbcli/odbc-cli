@@ -360,6 +360,9 @@ class MssqlCompleter(Completer):
                 syn_matches = [m for m in syn_matches if m]
                 sort_key = max(syn_matches) if syn_matches else None
             else:
+                if cand == "":
+                    # We don't offer up empty strings as suggestions
+                    continue
                 item, display_meta, prio, prio2, display = cand, meta, 0, 0, cand
                 sort_key = _match(cand)
 
@@ -670,13 +673,17 @@ class MssqlCompleter(Completer):
             catalog_u = conn.current_catalog()
 
         catalog_e = self.escape_name(catalog_u)
-        cats = submeta.keys()
         self.logger.debug("get_schema_matches: parent %s", suggestion.parent)
         # OG: Note here, if there is even a single schema in [catalog_e].keys()
         # we'll happily return a potentially incomplete result set.
-        if catalog_e in cats and submeta[catalog_e]:
-            schema_names_e = submeta[catalog_e].keys()
-        else: 
+        schema_names_e = conn.dbmetadata.get_schemas(catalog = catalog_e)
+
+        if schema_names_e is None:
+            # Asking for schema in a non-existant catalog
+            return []
+
+        if len(schema_names_e) == 0:
+            # Catalog exists in dbmetadata but is empty
             if suggestion.parent:
                 # Looking for schemas in a specified catalog
                 schema_names = []
@@ -690,12 +697,12 @@ class MssqlCompleter(Completer):
                             schema = "",
                             table = "",
                             type = "")
-                    for r in res:
-                        if (r.schema not in schema_names and r.schema != ""):
-                            schema_names.append(r.schema)
+                    schema_names = [r.schema for r in res]
             else:
                 # Looking for schemas in current catalog
-                schema_names = set(conn.list_schemas())
+                schema_names = conn.list_schemas()
+
+            schema_names = set(schema_names)
             
             schema_names_e = self.escaped_names(schema_names)
             conn.dbmetadata.extend_schemas(catalog = catalog_e, names = schema_names_e)
@@ -821,11 +828,12 @@ class MssqlCompleter(Completer):
     def get_database_matches(self, _, word_before_cursor):
         conn = self.active_conn
         metadata = conn.dbmetadata.data
-        catalogs = metadata["table"].keys()
-        if not catalogs and (conn.connected()):
-            catalogs = self.escaped_names(conn.list_catalogs())
-            conn.dbmetadata.extend_catalogs(catalogs)
-        return self.find_matches(word_before_cursor, catalogs,
+        catalogs_e = conn.dbmetadata.get_catalogs()
+        if catalogs_e is None and (conn.connected()):
+            catalogs_e = self.escaped_names(conn.list_catalogs())
+            conn.dbmetadata.extend_catalogs(catalogs_e)
+
+        return self.find_matches(word_before_cursor, catalogs_e,
                                  meta='catalog')
 
     def get_keyword_matches(self, suggestion, word_before_cursor):
@@ -975,6 +983,13 @@ class MssqlCompleter(Completer):
                 schema_u = self.unescape_name(tbl.schema)
             else:
                 schema_u = ""
+
+            if catalog_u is None or catalog_u == "":
+                # Don't allow "".[schema].[table]
+                # Interpret this to mean [schema]."".[table]
+                catalog_u = schema_u
+                schema_u = ""
+
             relname_u = self.unescape_name(tbl.name)
             catalog = self.escape_name(catalog_u)
             schema = self.escape_name(schema_u)
@@ -1054,39 +1069,19 @@ class MssqlCompleter(Completer):
         conn = self.active_conn
         metadata = conn.dbmetadata.data
         submeta = metadata[obj_type]
+        self.logger.debug("populate_objects(%s): Called for %s.%s",
+                obj_type, catalog, schema)
         if catalog is None and schema is None:
-            # Query free tables, no catalog or schema (think SQLite)
-            # Trying to communicate here empty string, "" to
-            # SQLTables API.  Unfortunately, nanodbc intercepts these
-            # and translates them into nullptr which in turn are treated
-            # as wildcards per ODBC standard.  So try to work around the
-            # nanodbc intercept, and create an empty string as a
-            # null-terminated string without content.
-            # TODO: find a way to cache / record in dbmetadata the reesults
-            # of this query since it's pretty expensive - gets called on every
-            # "FROM_".
-            self.logger.debug("populate_objects(%s): Calling find_tables with catalog/schema null",
-                    obj_type)
-            res = conn.find_tables(
-                    catalog = "\x00",
-                    schema = "\x00",
-                    table = "",
-                    type = obj_type)
-
-            for r in res:
-                name_e = self.escape_name(r.name)
-                ret.append(
-                    SchemaObject(
-                        name = name_e,
-                        schema = "",
-                        catalog = ""
-                    )
-                )
-            # Don't expand dbmetadata with free tables (for now)
-            return ret
+            catalog = ""
+            schema = ""
         if catalog is None:
-            #Set to current catalog
+            # Set to current catalog
             catalog = conn.current_catalog()
+            if catalog is None or catalog == "":
+                # Don't allow "".[schema]
+                # Interpret this to mean [schema].""
+                catalog = schema
+                schema = ""
         # Note to self, as soon as a period is inputted a schema (parent) is
         # no longer none.  Technically we should never be in a situation where
         # catalog is not None but schema is None.
@@ -1094,29 +1089,32 @@ class MssqlCompleter(Completer):
         # dbmetadata always escaped?
         catalog_e = self.escape_name(self.unescape_name(catalog))
         schema_e = self.escape_name(self.unescape_name(schema))
+        obj_names = conn.dbmetadata.get_objects(catalog = catalog_e, schema = schema_e, obj_type = obj_type)
+        if obj_names is None:
+            self.logger.debug("populate_objects(%s): Called for %s.%s, catalog/schema not found",
+                    obj_type, catalog, schema)
+            return []
 
-        if catalog_e in submeta.keys() and \
-                schema_e in submeta[catalog_e].keys() and \
-                submeta[catalog_e][schema_e]:
-            self.logger.debug("populate_objects(%s): Found %s.%s metadata", obj_type, catalog_e, schema_e)
-            obj_names = submeta[catalog_e][schema_e].keys()
-            for name_e in obj_names:
-                ret.append(
-                    SchemaObject(
-                        name=name_e,
-                        schema=schema_e, #should this be r.schema
-                        catalog=catalog_e #should this be r.catalog
-                    )
-                )
-        else:
+        if len(obj_names) == 0:
+            # catalog.schema were found but dbmetadata had no information as to
+            # content.  So let's attempt to query
+            obj_names = []
             self.logger.debug("populate_objects(%s): Did not find %s.%s metadata.  Will query.", obj_type, catalog_e, schema_e)
-            res = conn.find_tables(
-                    catalog = conn.sanitize_search_string(
-                        self.unescape_name(catalog)),
-                    schema = conn.sanitize_search_string(
-                        self.unescape_name(schema)),
-                    table = "",
-                    type = obj_type)
+            # Special case: Look for tables without catalog/schema
+            if catalog == "" and schema == "":
+                res = conn.find_tables(
+                        catalog = "\x00",
+                        schema = "\x00",
+                        table = "",
+                        type = obj_type)
+            else:
+                res = conn.find_tables(
+                        catalog = conn.sanitize_search_string(
+                            self.unescape_name(catalog)),
+                        schema = conn.sanitize_search_string(
+                            self.unescape_name(schema)),
+                        table = "",
+                        type = obj_type)
             for r in res:
                 name_e = self.escape_name(r.name)
                 ret.append(
@@ -1128,8 +1126,18 @@ class MssqlCompleter(Completer):
                 )
                 obj_names.append(name_e)
             self.logger.debug("populate_objects(%s): Query complete %s.%s", obj_type, catalog_e, schema_e)
-            conn.dbmetadata.extend_objects(catalog = catalog_e, schema = schema_e,
+            conn.dbmetadata.extend_objects(
+                    catalog = catalog_e, schema = schema_e,
                     names = obj_names, obj_type = obj_type)
+        else:
+            for name_e in obj_names:
+                ret.append(
+                    SchemaObject(
+                        name=name_e,
+                        schema=schema_e, #should this be r.schema
+                        catalog=catalog_e #should this be r.catalog
+                    )
+                )
         return ret
 
     def populate_functions(self, schema, filter_func):

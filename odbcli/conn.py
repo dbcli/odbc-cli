@@ -456,48 +456,12 @@ class MySQL(sqlConnection):
             we do, in-fact fall-back to find_tables"""
         return []
 
-    def find_tables(
-            self,
-            catalog = "",
-            schema = "",
-            table = "",
-            type = "") -> list:
-
-        if catalog in ["", "null"] and schema not in ["", "null"]:
-            catalog = schema
-            schema = ""
-
-        return super().find_tables(
-                catalog = catalog,
-                schema = schema,
-                table = table,
-                type = type)
-
-    def find_columns(
-            self,
-            catalog = "",
-            schema = "",
-            table = "",
-            column = "") -> list:
-
-        if catalog in ["", "null"] and schema not in ["", "null"]:
-            catalog = schema
-            schema = ""
-
-        return super().find_columns(
-                catalog = catalog,
-                schema = schema,
-                table = table,
-                column = column)
-
-class SQLite(sqlConnection):
-
-    def list_schemas(self, catalog = None) -> list:
-        """Easy peasy"""
-        return []
-    def list_catalogs(self) -> list:
-        """Easy peasy"""
-        return []
+    def current_catalog(self) -> str:
+        if self.conn.connected():
+            res = self.conn.catalog_name
+        if res == "null":
+            res = ""
+        return res
 
 class Snowflake(sqlConnection):
 
@@ -517,6 +481,5 @@ class Snowflake(sqlConnection):
 
 connWrappers["MySQL"] = MySQL
 connWrappers["Microsoft SQL Server"] = MSSQL
-connWrappers["SQLite"] = SQLite
 connWrappers["PostgreSQL"] = PSSQL
 connWrappers["Snowflake"] = Snowflake
