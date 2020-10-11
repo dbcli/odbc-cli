@@ -112,6 +112,24 @@ class sqlConnection:
             res = term
         return res
 
+    def escape_name(self, name):
+        if name:
+            qtchar = self.quotechar
+            name = (qtchar + "%s" + qtchar) % name
+        return name
+
+    def escape_names(self, names):
+        return [self.escape_name(name) for name in names]
+
+    def unescape_name(self, name):
+        """ Unquote a string."""
+        if name:
+            qtchar = self.quotechar
+            if name and name[0] == qtchar and name[-1] == qtchar:
+                name = name[1:-1]
+
+        return name
+
     def connect(
             self,
             username: str = "",

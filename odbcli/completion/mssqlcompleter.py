@@ -133,11 +133,8 @@ class MssqlCompleter(Completer):
         return self._get_conn()
 
     def escape_name(self, name):
-        # OG: double quotation here, probably needs to be something that
-        # can be configured
-        if name and self.active_conn is not None:
-            qtchar = self.active_conn.quotechar
-            name = (qtchar + "%s" + qtchar) % name
+        if self.active_conn is not None:
+            name = self.active_conn.escape_name(name)
 
         return name
 
@@ -147,17 +144,18 @@ class MssqlCompleter(Completer):
     def unescape_name(self, name):
         """ Unquote a string."""
         if self.active_conn is not None:
-            qtchar = self.active_conn.quotechar
-            if name and name[0] == qtchar and name[-1] == qtchar:
-                name = name[1:-1]
+            name = self.active_conn.unescape_name(name)
 
         return name
 
-    def escaped_names(self, names):
-        return [self.escape_name(name) for name in names]
+    def escape_names(self, names):
+        if self.active_conn is not None:
+            names = self.active_conn.escape_names(names)
+
+        return names
 
     def extend_database_names(self, databases):
-        databases = self.escaped_names(databases)
+        databases = self.escape_names(databases)
         self.databases.extend(databases)
 
     def extend_keywords(self, additional_keywords):
@@ -184,7 +182,7 @@ class MssqlCompleter(Completer):
         submeta = metadata['function']
 
         for f in func_data:
-            schema, func = self.escaped_names([f.schema_name, f.func_name])
+            schema, func = self.escape_names([f.schema_name, f.func_name])
 
             if func in submeta[schema]:
                 submeta[schema][func].append(f)
@@ -227,7 +225,7 @@ class MssqlCompleter(Completer):
         submeta = metadata['table']
 
         for fk in fk_data:
-            e = self.escaped_names
+            e = self.escape_names
             parentschema, childschema = e([fk.parentschema, fk.childschema])
             parenttable, childtable = e([fk.parenttable, fk.childtable])
             childcol, parcol = e([fk.childcolumn, fk.parentcolumn])
@@ -247,7 +245,7 @@ class MssqlCompleter(Completer):
         metadata = conn.dbmetadata.data
 
         for t in type_data:
-            schema, type_name = self.escaped_names(t)
+            schema, type_name = self.escape_names(t)
             metadata["datatype"][schema][type_name] = None
             # OG: Unclear what the roll of all_completions is
             # self.all_completions.add(type_name)
@@ -261,7 +259,7 @@ class MssqlCompleter(Completer):
             self.prioritizer.update(text)
 
     def set_search_path(self, search_path):
-        self.search_path = self.escaped_names(search_path)
+        self.search_path = self.escape_names(search_path)
 
     def reset_completions(self):
         # databases at this point is not used
@@ -704,7 +702,7 @@ class MssqlCompleter(Completer):
 
             schema_names = set(schema_names)
             
-            schema_names_e = self.escaped_names(schema_names)
+            schema_names_e = self.escape_names(schema_names)
             conn.dbmetadata.extend_schemas(catalog = catalog_e, names = schema_names_e)
 
         return self.find_matches(
@@ -830,7 +828,7 @@ class MssqlCompleter(Completer):
         metadata = conn.dbmetadata.data
         catalogs_e = conn.dbmetadata.get_catalogs()
         if catalogs_e is None and (conn.connected()):
-            catalogs_e = self.escaped_names(conn.list_catalogs())
+            catalogs_e = self.escape_names(conn.list_catalogs())
             conn.dbmetadata.extend_catalogs(catalogs_e)
 
         return self.find_matches(word_before_cursor, catalogs_e,
