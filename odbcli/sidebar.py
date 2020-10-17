@@ -98,11 +98,13 @@ class myDBObject:
             self.parent.collapse()
 
     def add_children(self, list_obj: List["myDBObject"]) -> None:
-        self.children = list_obj
-        for i in range(len(self.children) - 1):
-            self.children[i].next_object = self.children[i + 1]
-        self.children[len(self.children) - 1].next_object = self.next_object
-        self.next_object = self.children[0]
+        lst = list(filter(lambda x: x.name != "", list_obj))
+        if len(lst):
+            self.children = lst
+            for i in range(len(self.children) - 1):
+                self.children[i].next_object = self.children[i + 1]
+            self.children[len(self.children) - 1].next_object = self.next_object
+            self.next_object = self.children[0]
 
 class myDBColumn(myDBObject):
     def _expand_internal(self) -> None:
@@ -137,9 +139,8 @@ class myDBTable(myDBObject):
             otype = col.type_name,
             parent = self,
             level = self.level + 1) for col in res]
-        if len(lst):
-            self.add_children(list_obj = lst)
 
+        self.add_children(list_obj = lst)
         return None
 
 class myDBSchema(myDBObject):
@@ -151,16 +152,33 @@ class myDBSchema(myDBObject):
                 schema = self.name,
                 table = "",
                 type = "")
-        lst = [myDBTable(
-            my_app = self.my_app,
-            conn = self.conn,
-            name = table.name,
-            otype = table.type,
-            parent = self,
-            level = self.level + 1) for table in res]
-        if len(lst):
-            self.add_children(list_obj = lst)
+        tables = []
+        views = []
+        lst = []
+        for table in res:
+            if table.type.lower() == 'table':
+                tables.append(table.name)
+            if table.type.lower() == 'view':
+                views.append(table.name)
+            lst.append(myDBTable(
+                my_app = self.my_app,
+                conn = self.conn,
+                name = table.name,
+                otype = table.type,
+                parent = self,
+                level = self.level + 1))
 
+        self.conn.dbmetadata.extend_objects(
+                catalog = self.conn.escape_name(self.parent.name) if self.parent else "",
+                schema = self.conn.escape_name(self.name),
+                names = self.conn.escape_names(tables),
+                obj_type = "table")
+        self.conn.dbmetadata.extend_objects(
+                catalog = self.conn.escape_name(self.parent.name) if self.parent else "",
+                schema = self.conn.escape_name(self.name),
+                names = self.conn.escape_names(views),
+                obj_type = "view")
+        self.add_children(list_obj = lst)
         return None
 
 class myDBCatalog(myDBObject):
@@ -169,36 +187,53 @@ class myDBCatalog(myDBObject):
         schemas = self.conn.list_schemas(
                 catalog = self.conn.sanitize_search_string(self.name))
 
-        if len(schemas) < 1:
+        if len(schemas) < 1 or all([s == "" for s in schemas]):
             res = self.conn.find_tables(
                     catalog = self.conn.sanitize_search_string(self.name),
                     schema = "",
                     table = "",
                     type = "")
-            for r in res:
-                if (r.schema not in schemas and r.schema != ""):
-                    schemas.append(r.schema)
-        if len(schemas):
+            schemas = [r.schema for r in res]
+
+        self.conn.dbmetadata.extend_schemas(
+                catalog = self.conn.escape_name(self.name),
+                names = self.conn.escape_names(schemas))
+        if not all([s == "" for s in schemas]):
             lst = [myDBSchema(
                 my_app = self.my_app,
                 conn = self.conn,
                 name = schema,
                 otype = "Schema",
                 parent = self,
-                level = self.level + 1) for schema in schemas]
-        else:
+                level = self.level + 1) for schema in sorted(set(schemas))]
+        elif len(schemas):
             # No schemas found; but if there are tables then these are direct
             # descendents, i.e. MySQL
-            lst = [myDBTable(
-                my_app = self.my_app,
-                conn = self.conn,
-                name = table.name,
-                otype = table.type,
-                parent = self,
-                level = self.level + 1) for table in res]
-        if len(lst):
-            self.add_children(list_obj = lst)
+            tables = []
+            views = []
+            lst = []
+            for table in res:
+                if table.type.lower() == 'table':
+                    tables.append(table.name)
+                if table.type.lower() == 'view':
+                    views.append(table.name)
+                lst.append(myDBTable(
+                    my_app = self.my_app,
+                    conn = self.conn,
+                    name = table.name,
+                    otype = table.type,
+                    parent = self,
+                    level = self.level + 1))
+            self.conn.dbmetadata.extend_objects(
+                    catalog = self.conn.escape_name(self.name),
+                    schema = "", names = self.conn.escape_names(tables),
+                    obj_type = "table")
+            self.conn.dbmetadata.extend_objects(
+                    catalog = self.conn.escape_name(self.name),
+                    schema = "", names = self.conn.escape_names(views),
+                    obj_type = "view")
 
+        self.add_children(list_obj = lst)
         return None
 
 
@@ -222,26 +257,23 @@ class myDBConn(myDBObject):
                 self.conn.dbmetadata.extend_catalogs(
                         self.conn.escape_names(rows))
         else:
-            schemas = []
             res = self.conn.find_tables(
                     catalog = "%",
                     schema = "",
                     table = "",
                     type = "")
-            for r in res:
-                if (r.schema not in schemas and r.schema != ""):
-                    schemas.append(r.schema)
-            if len(schemas):
+            schemas = [r.schema for r in res]
+            self.conn.dbmetadata.extend_schemas(catalog = "",
+                    names = self.conn.escape_names(schemas))
+            if not all([s == "" for s in schemas]):
                 lst = [myDBSchema(
                     my_app = self.my_app,
                     conn = self.conn,
                     name = schema,
                     otype = "Schema",
                     parent = self,
-                    level = self.level + 1) for schema in schemas]
-                self.conn.dbmetadata.extend_schemas(catalog = "",
-                        names = self.conn.escape_names(schemas))
-            else:
+                    level = self.level + 1) for schema in sorted(set(schemas))]
+            elif len(schemas):
                 tables = []
                 views = []
                 lst = []
@@ -257,14 +289,13 @@ class myDBConn(myDBObject):
                     otype = table.type,
                     parent = self,
                     level = self.level + 1))
-                    self.conn.dbmetadata.extend_objects(catalog = "",
-                            schema = "", names = self.conn.escape_names(tables),
-                            obj_type = "table")
-                    self.conn.dbmetadata.extend_objects(catalog = "",
-                            schema = "", names = self.conn.escape_names(views),
-                            obj_type = "view")
-        if len(lst):
-            self.add_children(list_obj = lst)
+                self.conn.dbmetadata.extend_objects(catalog = "",
+                        schema = "", names = self.conn.escape_names(tables),
+                        obj_type = "table")
+                self.conn.dbmetadata.extend_objects(catalog = "",
+                        schema = "", names = self.conn.escape_names(views),
+                        obj_type = "view")
+        self.add_children(list_obj = lst)
         return None
 
 def sql_sidebar_help(my_app: "sqlApp"):
