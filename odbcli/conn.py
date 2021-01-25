@@ -299,6 +299,52 @@ class sqlConnection:
 
         return res
 
+    def find_procedures(
+            self,
+            catalog = "",
+            schema = "",
+            procedure = "") -> list:
+        res = []
+
+        try:
+            if self.conn.connected():
+                self.logger.debug("Calling find_procedures: %s, %s, %s",
+                        catalog, schema, procedure)
+                with self._lock:
+                    res = self.conn.find_procedures(
+                        catalog = catalog,
+                        schema = schema,
+                        procedure = procedure)
+                self.logger.debug("find_procedures: done")
+        except DatabaseError as e:
+            self.logger.warning("find_procedures: %s.%s.%s: %s", catalog, schema, procedure, str(e))
+
+        return res
+
+    def find_procedure_columns(
+            self,
+            catalog = "",
+            schema = "",
+            procedure = "",
+            column = "") -> list:
+        res = []
+
+        try:
+            if self.conn.connected():
+                self.logger.debug("Calling find_procedure_columns: %s, %s, %s, %s",
+                        catalog, schema, procedure, column)
+                with self._lock:
+                    res = self.conn.find_procedure_columns(
+                            catalog = catalog,
+                            schema = schema,
+                            procedure = procedure,
+                            column = column)
+                self.logger.debug("find_procedure_columns: done")
+        except DatabaseError as e:
+            self.logger.warning("find_procedure_columns: %s.%s.%s, column %s: %s", catalog, schema, procedure, column, str(e))
+
+        return res
+
     def current_catalog(self) -> str:
         if self.conn.connected():
             return self.conn.catalog_name
@@ -443,6 +489,23 @@ class PSSQL(sqlConnection):
                 table = table,
                 type = type)
 
+    def find_procedures(
+            self,
+            catalog = "",
+            schema = "",
+            procedure = "") -> list:
+        """ At least the psql odbc driver I am using has an annoying habbit
+            of treating the catalog and schema fields interchangible, which
+            in turn screws up with completion"""
+
+        if not catalog in [self.current_catalog(), self.sanitize_search_string(self.current_catalog())]:
+            return []
+
+        return super().find_procedures(
+                catalog = catalog,
+                schema = schema,
+                procedure = procedure)
+
     def find_columns(
             self,
             catalog = "",
@@ -460,6 +523,29 @@ class PSSQL(sqlConnection):
                 catalog = catalog,
                 schema = schema,
                 table = table,
+                column = column)
+
+    def find_procedure_columns(
+            self,
+            catalog = "",
+            schema = "",
+            procedure = "",
+            column = "") -> list:
+        """ At least the psql odbc driver I am using has an annoying habbit
+            of treating the catalog and schema fields interchangible, which
+            in turn screws up with completion.  In addition wildcards in the column
+            field, seem to not work - but an empty string does."""
+
+        if not catalog in [self.current_catalog(), self.sanitize_search_string(self.current_catalog())]:
+            return []
+
+        if column == "%":
+            column = ""
+
+        return super().find_procedure_columns(
+                catalog = catalog,
+                schema = schema,
+                procedure = procedure,
                 column = column)
 
 class MySQL(sqlConnection):

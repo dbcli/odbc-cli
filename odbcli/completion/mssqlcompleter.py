@@ -630,6 +630,10 @@ class MssqlCompleter(Completer):
     # TODO: Need to account for suggestion.catalog
     def get_function_matches(
             self, suggestion, word_before_cursor, alias=False):
+
+        # OG: hack early exit, for now
+        return []
+        # We'll have to do away with this right? How can we possibly know this
         if suggestion.usage == 'from':
             # Only suggest functions allowed in FROM clause
             def filt(f):
@@ -652,6 +656,7 @@ class MssqlCompleter(Completer):
 
         matches = self.find_matches(word_before_cursor, funcs, meta='function')
 
+        # OG: TODO: catalog here
         if not suggestion.schema and not suggestion.usage:
             # also suggest hardcoded functions using startswith matching
             predefined_funcs = self.find_matches(

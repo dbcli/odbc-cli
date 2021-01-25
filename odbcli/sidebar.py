@@ -110,6 +110,39 @@ class myDBColumn(myDBObject):
     def _expand_internal(self) -> None:
         return None
 
+class myDBFunction(myDBObject):
+    def _expand_internal(self) -> None:
+        cat = "%"
+        schema = "%"
+        # https://docs.microsoft.com/en-us/sql/odbc/reference/syntax/sqlprocedurecolumns-function?view=sql-server-ver15
+        # CatalogName cannot contain a string search pattern
+
+        if self.parent is not None:
+            if type(self.parent).__name__ == "myDBSchema":
+                schema = self.conn.sanitize_search_string(self.parent.name)
+            elif type(self.parent).__name__ == "myDBCatalog":
+                cat = self.parent.name
+            if self.parent.parent is not None:
+                if type(self.parent.parent).__name__ == "myDBCatalog":
+                    cat = self.parent.parent.name
+
+        res = self.conn.find_procedure_columns(
+                catalog = cat,
+                schema = schema,
+                procedure = self.conn.sanitize_search_string(self.name),
+                column = "%")
+
+        lst = [myDBColumn(
+            my_app = self.my_app,
+            conn = self.conn,
+            name = col.column,
+            otype = col.type_name,
+            parent = self,
+            level = self.level + 1) for col in res]
+
+        self.add_children(list_obj = lst)
+        return None
+
 class myDBTable(myDBObject):
     def _expand_internal(self) -> None:
         cat = "%"
@@ -149,11 +182,16 @@ class myDBSchema(myDBObject):
         cat = self.conn.sanitize_search_string(self.parent.name) if self.parent is not None else "%"
         res = self.conn.find_tables(
                 catalog = cat,
-                schema = self.name,
+                schema = self.conn.sanitize_search_string(self.name),
                 table = "",
                 type = "")
+        resf = self.conn.find_procedures(
+                catalog = cat,
+                schema = self.conn.sanitize_search_string(self.name),
+                procedure = "")
         tables = []
         views = []
+        functions = []
         lst = []
         for table in res:
             if table.type.lower() == 'table':
@@ -164,7 +202,16 @@ class myDBSchema(myDBObject):
                 my_app = self.my_app,
                 conn = self.conn,
                 name = table.name,
-                otype = table.type,
+                otype = table.type.lower(),
+                parent = self,
+                level = self.level + 1))
+        for func in resf:
+            functions.append(func.name)
+            lst.append(myDBFunction(
+                my_app = self.my_app,
+                conn = self.conn,
+                name = func.name,
+                otype = "function",
                 parent = self,
                 level = self.level + 1))
 
@@ -178,6 +225,11 @@ class myDBSchema(myDBObject):
                 schema = self.conn.escape_name(self.name),
                 names = self.conn.escape_names(views),
                 obj_type = "view")
+        self.conn.dbmetadata.extend_objects(
+                catalog = self.conn.escape_name(self.parent.name) if self.parent else "",
+                schema = self.conn.escape_name(self.name),
+                names = self.conn.escape_names(functions),
+                obj_type = "function")
         self.add_children(list_obj = lst)
         return None
 
@@ -198,12 +250,15 @@ class myDBCatalog(myDBObject):
         self.conn.dbmetadata.extend_schemas(
                 catalog = self.conn.escape_name(self.name),
                 names = self.conn.escape_names(schemas))
+
         if not all([s == "" for s in schemas]):
+            # Schemas were found either having called list_schemas
+            # or via the find_tables call
             lst = [myDBSchema(
                 my_app = self.my_app,
                 conn = self.conn,
                 name = schema,
-                otype = "Schema",
+                otype = "schema",
                 parent = self,
                 level = self.level + 1) for schema in sorted(set(schemas))]
         elif len(schemas):
@@ -221,7 +276,7 @@ class myDBCatalog(myDBObject):
                     my_app = self.my_app,
                     conn = self.conn,
                     name = table.name,
-                    otype = table.type,
+                    otype = table.type.lower(),
                     parent = self,
                     level = self.level + 1))
             self.conn.dbmetadata.extend_objects(
@@ -251,7 +306,7 @@ class myDBConn(myDBObject):
                     my_app = self.my_app,
                     conn = self.conn,
                     name = row,
-                    otype = "Catalog",
+                    otype = "catalog",
                     parent = self,
                     level = self.level + 1) for row in rows]
                 self.conn.dbmetadata.extend_catalogs(
@@ -270,7 +325,7 @@ class myDBConn(myDBObject):
                     my_app = self.my_app,
                     conn = self.conn,
                     name = schema,
-                    otype = "Schema",
+                    otype = "schema",
                     parent = self,
                     level = self.level + 1) for schema in sorted(set(schemas))]
             elif len(schemas):
@@ -286,7 +341,7 @@ class myDBConn(myDBObject):
                     my_app = self.my_app,
                     conn = self.conn,
                     name = table.name,
-                    otype = table.type,
+                    otype = table.type.lower(),
                     parent = self,
                     level = self.level + 1))
                 self.conn.dbmetadata.extend_objects(catalog = "",
