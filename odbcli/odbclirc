@@ -66,6 +66,14 @@ min_num_menu_lines = 5
 # we attempt to limit the maximum number of rows fetched to this number.
 preview_limit_rows = 500
 
+# When previewing a table, the asynchronous operation will fetch all the
+# results from the SELECT query in chunks of fixed sizes asynchronously.
+# This number should generally be larger than the number of rows on the screen
+# but comfortably less than the total number of rows limited by
+# preview_limit_rows.  More likely than not, you should not need to change this
+# number.
+preview_fetch_chunk_size = 100
+
 # Custom colors for the completion menu, toolbar, etc.
 [colors]
 completion-menu.completion.current = 'bg:#ffffff #000000'

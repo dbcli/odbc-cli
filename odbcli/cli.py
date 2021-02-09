@@ -42,6 +42,8 @@ def main():
                     execution = time() - start
                     secho("Query execution...done", err = False)
                     if(app_res[0] == "preview"):
+                        sql_conn.async_fetchall(my_app.preview_chunk_size,
+                                my_app.application)
                         continue
                     if my_app.timing_enabled:
                         print("Time: %0.03fs" % execution)
@@ -56,8 +58,8 @@ def main():
                             cols = []
                         if len(cols):
                             ht = my_app.application.output.get_size()[0]
+                            sql_conn.async_fetchall(ht - 3 - my_app.pager_reserve_lines, my_app.application)
                             formatted = sql_conn.formatted_fetch(ht - 3 - my_app.pager_reserve_lines, cols, my_app.table_format)
-                            sql_conn.status = connStatus.FETCHING
                             echo_via_pager(formatted)
                         else:
                             secho("No rows returned\n", err = False)
@@ -65,5 +67,4 @@ def main():
                     secho("Cancelling query...", err = True, fg = "red")
                     sql_conn.cancel()
                     secho("Query cancelled.", err = True, fg = "red")
-                sql_conn.status = connStatus.IDLE
                 sql_conn.close_cursor()

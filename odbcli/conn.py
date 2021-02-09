@@ -4,7 +4,8 @@ from typing import Optional
 from cli_helpers.tabular_output import TabularOutputFormatter
 from logging import getLogger
 from re import sub
-from threading import Lock, Event, Thread
+from threading import Lock, Event, Thread, Condition
+from asyncio import get_event_loop
 from enum import IntEnum
 from .dbmetadata import DbMetadata
 
@@ -36,7 +37,6 @@ class sqlConnection:
         self.query: str = None
         self.username = username
         self.password = password
-        self.status = connStatus.DISCONNECTED
         self.logger = getLogger(__name__)
         self.dbmetadata = DbMetadata()
         self._quotechar = None
@@ -52,7 +52,23 @@ class sqlConnection:
         # multiple auto-completion result queries before each has had a chance
         # to return.
         self._lock = Lock()
-        self._fetch_res: list = None
+
+        # Lock to be held when updating self.status, which can happen from
+        # a thread
+        self._status_lock = Lock()
+        # Lock to be held when updating self._execution_status_lock which
+        # can happen from a thread
+        self._execution_status_lock = Lock()
+
+        # Lock that protects interaction with _fetch_res
+        self._fetch_cv = Condition()
+        # This is the list that carries the cache of retrieved rows via the
+        # asynchronous fetch operation
+        self._fetch_res: list = []
+        self._fetch_thread = Thread()
+        self._cancel_async_event = Event()
+
+        self._status = connStatus.DISCONNECTED
         self._execution_status: executionStatus = executionStatus.OK
         self._execution_err: str = None
 
@@ -60,8 +76,16 @@ class sqlConnection:
     def execution_status(self) -> executionStatus:
         """ Hold the lock here since it gets assigned in execute
             which can be called in a different thread """
-        with self._lock:
+        with self._execution_status_lock:
             res = self._execution_status
+        return res
+
+    @property
+    def status(self) -> connStatus:
+        """ Hold the lock here since it can be assigned in more than one
+            thread """
+        with self._status_lock:
+            res = self._status
         return res
 
     @property
@@ -97,6 +121,18 @@ class sqlConnection:
                 (self.search_escapechar).encode("unicode-escape").decode()
 
         return self._search_escapepattern
+
+    def update_status(self, status: connStatus = connStatus.IDLE) -> None:
+        """ Thread safe way of updating the connection status
+        """
+        with self._status_lock:
+            self._status = status
+
+    def update_execution_status(self, status: executionStatus = executionStatus.OK) -> None:
+        """ Thread safe way of updating the execution status
+        """
+        with self._execution_status_lock:
+            self._execution_status = status
 
     def sanitize_search_string(self, term) -> str:
         if term is not None and len(term):
@@ -147,36 +183,80 @@ class sqlConnection:
         if force or not self.conn.connected():
             try:
                 self.conn = connect(dsn = conn_str, timeout = 5)
-                self.status = connStatus.IDLE
+                self.update_status(connStatus.IDLE)
             except ConnectError as e:
                 self.logger.error("Error while connecting: %s", str(e))
                 raise ConnectError(e)
 
-    def fetchmany(self, size, event: Event = None) -> list:
+    def fetchmany(self, size) -> list:
         with self._lock:
             if self.cursor:
-                self._fetch_res = self.cursor.fetchmany(size)
+                res = self.cursor.fetchmany(size)
             else:
-                self._fetch_res = []
-            if event is not None:
-                event.set()
-        return self._fetch_res
+                res = []
 
-    def async_fetchmany(self, size) -> list:
-        """ async_ is a misnomer here.  It does execute fetch in a new thread
-            however it will also wait for execution to complete. At this time
-            this helps us with registering KeyboardInterrupt during cyanodbc.
-            fetchmany only; it may evolve to have more true async-like behavior.
+        if len(res) < 1:
+            self.update_status(connStatus.IDLE)
+        with self._fetch_cv:
+            self._fetch_res.extend(res)
+            self._fetch_cv.notify()
+
+        return res
+
+    def async_fetchall(self, size, app) -> None:
+        """ True asynchronous fetch.  Will start a fetch, that will fetch
+            *all* results (in chunks of size = size) in a background operation
+            until the result set is depleted or we signal a stop via
+            _cancel_async_event.  After thread operation is completed,
+            it asks the running event loop to redraw the app to pick up the
+            new connection status (IDLE).
             """
-        exec_event = Event()
-        t = Thread(
-                target = self.fetchmany,
-                kwargs = {"size": size, "event": exec_event},
-                daemon = True)
-        t.start()
-        # Will block but can be interrupted
-        exec_event.wait()
-        return self._fetch_res
+        self._cancel_async_event.clear()
+        self.update_status(connStatus.FETCHING)
+        loop = get_event_loop()
+        def _run():
+            while True:
+                res = self.fetchmany(size)
+                if len(res) < 1 or self._cancel_async_event.is_set():
+                    self.update_status(connStatus.IDLE)
+                    self._cancel_async_event.clear()
+                    # Should we try close cursor here? Problem is that
+                    # close_curor attempts to call cancel async which would
+                    # block until this thread is over
+                    break
+            loop.call_soon_threadsafe(app.invalidate)
+            return
+
+        self._fetch_thread = Thread(target = _run, daemon = True)
+        self._fetch_thread.start()
+        return
+
+    def fetch_from_cache(self, size, wait = False) -> list:
+        """ Will grab the first size elements from self._fetch_res.  Recall
+            self._fetch_res is the result cache that is built up via an async
+            fetch that grabs rows in chunks.  Here, in a threadsafe manner we
+            wait for a the asynchronous method to grab enough elements or
+            finish the fetch operation altogether, then we 'pop' from the
+            fetch result cache.
+            """
+        with self._fetch_cv:
+            if wait:
+                self._fetch_cv.wait_for(
+                        lambda: len(self._fetch_res) > size or self.status == connStatus.IDLE)
+            res = self._fetch_res[:size]
+            del self._fetch_res[:size]
+        return res
+
+
+    def cancel_async_fetchall(self) -> None:
+        """ Signal fetching thread to terminate operation, then wait / block
+            until thread terminates.  Also clear the fetch result cache.
+            """
+        self._cancel_async_event.set()
+        if self._fetch_thread.is_alive():
+            self._fetch_thread.join()
+        with self._fetch_cv:
+            self._fetch_res = []
 
     def execute(self, query, parameters = None, event: Event = None) -> Cursor:
         self.logger.debug("Execute: %s", query)
@@ -185,14 +265,14 @@ class sqlConnection:
             self.cursor = self.conn.cursor()
             try:
                 self._execution_err = None
-                self.status = connStatus.EXECUTING
+                self.update_status(connStatus.EXECUTING)
                 self.cursor.execute(query, parameters)
-                self.status = connStatus.IDLE
-                self._execution_status = executionStatus.OK
+                self.update_status(connStatus.IDLE)
+                self.update_execution_status(executionStatus.OK)
                 self.query = query
             except DatabaseError as e:
-                self.status = connStatus.IDLE
-                self._execution_status = executionStatus.FAIL
+                self.update_status(connStatus.IDLE)
+                self.update_execution_status(executionStatus.FAIL)
                 self._execution_err = str(e)
                 self.logger.warning("Execution error: %s", str(e))
             if event is not None:
@@ -226,7 +306,7 @@ class sqlConnection:
                     res = self.conn.list_catalogs()
                 self.logger.debug("list_catalogs: done")
         except DatabaseError as e:
-            self.status = connStatus.ERROR
+            self.update_status(connStatus.ERROR)
             self.logger.warning("list_catalogs: %s", str(e))
 
         return res
@@ -246,7 +326,7 @@ class sqlConnection:
                     res = self.conn.list_schemas()
                 self.logger.debug("list_schemas: done")
         except DatabaseError as e:
-            self.status = connStatus.ERROR
+            self.update_status(connStatus.ERROR)
             self.logger.warning("list_schemas: %s", str(e))
 
         return res
@@ -370,15 +450,19 @@ class sqlConnection:
             self.conn.close()
 
     def close_cursor(self) -> None:
+        self.cancel_async_fetchall()
         if self.cursor:
             self.cursor.close()
             self.cursor = None
         self.query = None
+        self.update_status(connStatus.IDLE)
 
     def cancel(self) -> None:
+        self.cancel_async_fetchall()
         if self.cursor:
             self.cursor.cancel()
         self.query = None
+        self.update_status(connStatus.IDLE)
 
     def preview_query(
             self,
@@ -399,10 +483,10 @@ class sqlConnection:
 
     def formatted_fetch(self, size, cols, format_name = "psql"):
         while True:
-            res = self.async_fetchmany(size)
-            if len(res) < 1:
+            res = self.fetch_from_cache(size)
+            if len(res) < 1 and self.status != connStatus.FETCHING:
                 break
-            else:
+            if len(res) > 0:
                 yield "\n".join(
                         formatter.format_output(
                             res,

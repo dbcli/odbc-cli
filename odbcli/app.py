@@ -31,6 +31,7 @@ class sqlApp:
         self.set_default_pager(c)
         self.mouse_support: bool = c["main"].as_bool("mouse_support")
         self.preview_limit_rows = c["main"].as_int("preview_limit_rows")
+        self.preview_chunk_size = c["main"].as_int("preview_fetch_chunk_size")
         self.pager_reserve_lines = c["main"].as_int("pager_reserve_lines")
         self.table_format = c["main"]["table_format"]
         self.timing_enabled = c["main"].as_bool("timing")

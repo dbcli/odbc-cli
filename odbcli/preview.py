@@ -209,7 +209,6 @@ class PreviewElement:
                 the output buffer with results from the fetch/query.
             """
             sql_conn = self.my_app.selected_object.conn
-
             if sql_conn.execution_status == executionStatus.FAIL:
                 # Let's display the error message to the user
                 output = sql_conn.execution_err
@@ -220,12 +219,11 @@ class PreviewElement:
                 else:
                     cols = []
                 if len(cols):
-                    sql_conn.status = connStatus.FETCHING
-                    res = sql_conn.async_fetchmany(size = window_height - 4)
+                    res = sql_conn.fetch_from_cache(size = window_height - 4,
+                            wait = True)
                     output = self.formatter.format_output(res, cols, format_name = "psql")
                     output = "\n".join(output)
                 else:
-                    sql_conn.status = connStatus.IDLE
                     output = "No rows returned\n"
 
             # Add text to output buffer.
@@ -252,8 +250,7 @@ class PreviewElement:
 
             func = partial(refresh_results,
                     window_height = self.output_field.window.render_info.window_height)
-            # If status is IDLE, this is the first time we are executing.
-            if sql_conn.query != query or sql_conn.status == connStatus.IDLE:
+            if sql_conn.query != query:
                 # Exit the app to execute the query
                 self.my_app.application.exit(result = ["preview", query])
                 self.my_app.application.pre_run_callables.append(func)
@@ -265,7 +262,6 @@ class PreviewElement:
         def cancel_handler() -> None:
             sql_conn = self.my_app.selected_object.conn
             sql_conn.close_cursor()
-            sql_conn.status = connStatus.IDLE
             self.input_buffer.text = ""
             self.output_field.buffer.set_document(Document(
                 text = help_text, cursor_position = 0
