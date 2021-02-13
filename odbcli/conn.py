@@ -261,7 +261,6 @@ class sqlConnection:
     def execute(self, query, parameters = None, event: Event = None) -> Cursor:
         self.logger.debug("Execute: %s", query)
         with self._lock:
-            self.close_cursor()
             self.cursor = self.conn.cursor()
             try:
                 self._execution_err = None
@@ -280,11 +279,12 @@ class sqlConnection:
         return self.cursor
 
     def async_execute(self, query) -> Cursor:
-        """ async_ is a misnomer here.  It does execute fetch in a new thread
+        """ async_ is a misnomer here.  It does execute in a new thread
             however it will also wait for execution to complete. At this time
             this helps us with registering KeyboardInterrupt during cyanodbc.
             execute only; it may evolve to have more true async-like behavior.
             """
+        self.close_cursor()
         exec_event = Event()
         t = Thread(
                 target = self.execute,
