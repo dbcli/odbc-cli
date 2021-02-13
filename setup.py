@@ -16,7 +16,7 @@ def get_version(package):
 
 
 install_requirements = [
-    'cyanodbc >= 0.0.2',
+    'cyanodbc >= 0.0.3',
     'prompt_toolkit >= 3.0.5',
     'Pygments>=2.6.1',
     'sqlparse >= 0.3.1',
