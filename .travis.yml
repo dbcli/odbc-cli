@@ -21,7 +21,7 @@ script:
     if [[ "$TRAVIS_TAG" == "" ]]; then
         sed -i "/__version__ = / s/\"$/.20$TRAVIS_BUILD_NUMBER\"/" odbcli/__init__.py
     fi
-  - pip install . twine pytest
+  - pip install --upgrade --upgrade-strategy eager . twine pytest
   - pytest . 
   - python setup.py sdist
 
