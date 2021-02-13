@@ -380,10 +380,21 @@ class sqlConnection:
             self.cursor.cancel()
         self.query = None
 
-    def preview_query(self, table, filter_query = "", limit = -1) -> str:
-        qry = "SELECT * FROM " + table + " " + filter_query
-        if limit > 0:
-            qry = qry + " LIMIT " + str(limit)
+    def preview_query(
+            self,
+            name,
+            obj_type = "table",
+            filter_query = "",
+            limit = -1) -> str:
+        """ Currently we only have a generic implementation for tables and
+            views.  Otherwise (functions) we return None
+            """
+        if obj_type == "table" or obj_type == "view":
+            qry = "SELECT * FROM " + name + " " + filter_query
+            if limit > 0:
+                qry = qry + " LIMIT " + str(limit)
+        else:
+            qry = None
         return qry
 
     def formatted_fetch(self, size, cols, format_name = "psql"):
@@ -459,14 +470,29 @@ class MSSQL(sqlConnection):
 
     def preview_query(
             self,
-            table,
+            name,
+            obj_type = "table",
             filter_query = "",
             limit = -1) -> str:
-        qry = " * FROM " + table + " " + filter_query
-        if limit > 0:
-            qry = "SELECT TOP " + str(limit) + qry
+
+        if obj_type == "table" or obj_type == "view":
+            qry = " * FROM " + name + " " + filter_query
+            if limit > 0:
+                qry = "SELECT TOP " + str(limit) + qry
+            else:
+                qry = "SELECT" + qry
+        elif obj_type == "function":
+            # Sproc names in SQLServer come back with
+            # catalog.schema.name;INT with the trailing suffix
+            # not useful
+            name_sanitized = sub("(;\\d{0,})(\")$", "\\2", name)
+            catalog_local = sub("(.*)\\.(.*)\\.(.*)", "\\1", name)
+            qry = "SELECT definition FROM {catalog}.sys.sql_modules " \
+                  "WHERE object_id = (OBJECT_ID(N'{name}'))"
+            qry = qry.format(catalog = catalog_local, name = name_sanitized)
         else:
-            qry = "SELECT" + qry
+            qry = None
+
         return qry
 
 class PSSQL(sqlConnection):

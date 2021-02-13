@@ -252,7 +252,7 @@ class sqlApp:
             if type(obj).__name__ == "myDBConn" and obj.conn.connected():
                 # OG: some thread locking may be needed here
                 self._active_conn = obj.conn
-            elif type(obj).__name__ == "myDBTable":
+            elif obj.otype in ["table", "view", "function"]:
                 self.show_preview = True
                 self.show_sidebar = False
                 event.app.layout.focus(self.sql_layout.preview)
