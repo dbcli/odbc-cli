@@ -67,9 +67,12 @@ class PreviewCompleter(Completer):
         sql_conn = obj.conn
         identifier = object_to_identifier(obj)
         query = sql_conn.preview_query(
-                table = identifier,
+                name = identifier,
+                obj_type = obj.otype,
                 filter_query = document.text,
                 limit = self.my_app.preview_limit_rows)
+        if query is None:
+            return []
 
         new_document = Document(text = query,
                 cursor_position = query.find(document.text) + document.cursor_position)
@@ -240,9 +243,12 @@ class PreviewElement:
             sql_conn = obj.conn
             identifier = object_to_identifier(obj)
             query = sql_conn.preview_query(
-                    table = identifier,
+                    name = identifier,
+                    obj_type = obj.otype,
                     filter_query = buff.text,
                     limit = self.my_app.preview_limit_rows)
+            if query is None:
+                return True
 
             func = partial(refresh_results,
                     window_height = self.output_field.window.render_info.window_height)
