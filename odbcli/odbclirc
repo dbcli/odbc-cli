@@ -62,6 +62,16 @@ vi = False
 # Number of lines to reserve for the suggestion menu
 min_num_menu_lines = 5
 
+
+# When viewing the results of a query in the main execution prompt of the client
+# this option determines how many (expressed as a multiplier of the number of
+# rows on the screen) results to pre-fetch before displaying the results screen.
+# The fetch operation is asynchronous / in a background process; this option
+# essentially determines the trade-off between smooth scrolling through the
+# results (higher multiplier) and how quickly the initial results are displayed
+# on the screen (lower multiplier).  Generally a number >= 3 is recommended.
+fetch_chunk_multiplier = 5
+
 # When previewing a table we SELECT *.  If preview_limit_rows is > 0
 # we attempt to limit the maximum number of rows fetched to this number.
 preview_limit_rows = 500
