@@ -192,7 +192,14 @@ class sqlConnection:
     def fetchmany(self, size) -> list:
         with self._lock:
             if self.cursor:
-                res = self.cursor.fetchmany(size)
+                # This gets called in a thread / so exceptions can get lost
+                # Make sure to recover after cyanodbc errors so that we can
+                # complete the tail part of the worker (status/notify)
+                try:
+                    res = self.cursor.fetchmany(size)
+                except DatabaseError as e:
+                    self.logger.warning("Error while fetching: %s", str(e))
+                    res = []
             else:
                 res = []
 
@@ -576,6 +583,9 @@ class MSSQL(sqlConnection):
                 if len(schemas):
                     return schemas
             except DatabaseError as e:
+                # execute has an exception handler, but the cursor calls may
+                # throw
+                self.close_cursor()
                 self.logger.warning("MSSQL list_schemas: %s", str(e))
 
         return super().list_schemas(catalog = catalog)
