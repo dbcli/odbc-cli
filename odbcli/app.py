@@ -52,6 +52,11 @@ class sqlApp:
         self.show_disconnect_dialog: bool = False
         self._active_conn = None
         self.obj_list = []
+        # Flag to signal to some of the prompt toolkit structures that we need
+        # to traverse the obj_list anew to list all the objects in the sidebar.
+        # Added for efficiency (no need to traverse unless necessary).  Updated
+        # from the main thread always, so no need for locking.
+        self.obj_list_changed: bool = True
         dsns = list(datasources().keys())
         if len(dsns) < 1:
             sys.exit("No datasources found ... exiting.")

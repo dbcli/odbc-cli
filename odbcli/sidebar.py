@@ -4,7 +4,7 @@ from cyanodbc import Connection
 from typing import List, Optional, Callable
 from logging import getLogger
 from asyncio import get_event_loop
-from threading import Thread
+from threading import Thread, Lock
 from prompt_toolkit.layout.containers import HSplit, Window, ScrollOffsets, ConditionalContainer, Container
 from prompt_toolkit.formatted_text.base import StyleAndTextTuples
 from prompt_toolkit.formatted_text import fragment_list_width
@@ -40,9 +40,12 @@ class myDBObject:
         self.conn = conn
         self.children = children
         self.parent = parent
+        self.next_object = next_object
+        # Held while modifying children, parent, next_object
+        # As some of thes operatins (expand) happen asynchronously
+        self._lock = Lock()
         self.name = name
         self.otype = otype
-        self.next_object = next_object
         self.level = level
         self.selected: bool = False
         self.logger = getLogger(__name__)
@@ -67,6 +70,7 @@ class myDBObject:
             """ Callback, scheduled after threaded I/O
                 completes """
             self.my_app.show_expanding_object = False
+            self.my_app.obj_list_changed = True
             self.my_app.application.invalidate()
 
         def _run():
@@ -91,20 +95,24 @@ class myDBObject:
             obj = self.children[len(self.children) - 1].next_object
             while obj.level > self.level:
                 obj = obj.next_object
-            self.next_object = obj
-            self.children = None
+            with self._lock:
+                self.next_object = obj
+                self.children = None
         elif self.parent is not None:
             self.my_app.selected_object = self.parent
             self.parent.collapse()
 
+        self.my_app.obj_list_changed = True
+
     def add_children(self, list_obj: List["myDBObject"]) -> None:
         lst = list(filter(lambda x: x.name != "", list_obj))
         if len(lst):
-            self.children = lst
-            for i in range(len(self.children) - 1):
-                self.children[i].next_object = self.children[i + 1]
-            self.children[len(self.children) - 1].next_object = self.next_object
-            self.next_object = self.children[0]
+            with self._lock:
+                self.children = lst
+                for i in range(len(self.children) - 1):
+                    self.children[i].next_object = self.children[i + 1]
+                self.children[len(self.children) - 1].next_object = self.next_object
+                self.next_object = self.children[0]
 
 class myDBColumn(myDBObject):
     def _expand_internal(self) -> None:
@@ -556,18 +564,18 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
     )
 
     class myLexer(Lexer):
-        def __init__(self, token_list = None, *args, **kwargs):
+        def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.token_list = token_list
+            self._obj_list = []
+
+        def add_objects(self, objects: List):
+            self._obj_list = objects
 
         def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
             def get_line(lineno: int) -> StyleAndTextTuples:
                 # TODO: raise out-of-range exception
-                return self.token_list[lineno]
+                return tokenize_obj(self._obj_list[lineno])
             return get_line
-
-        def reset_tokens(self, tokens: [StyleAndTextTuples]):
-            self.token_list = tokens
 
 
     sidebar_lexer = myLexer()
@@ -577,7 +585,7 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
         def move_cursor_down(self):
             my_app.select_next()
         # Need to figure out what do do here
-        # AFAICT thse are only called for the mouse handler
+        # AFAICT these are only called for the mouse handler
         # when events are otherwise not handled
         def move_cursor_up(self):
             my_app.select_previous()
@@ -592,17 +600,18 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
             return NotImplemented
 
         def create_content(self, width: int, height: Optional[int]) -> UIContent:
+            # Only traverse the obj_list if it has been expanded / collapsed
+            if not my_app.obj_list_changed:
+                return super().create_content(width, height)
+
             res = []
-            res_tokens = []
             count = 0
             obj = my_app.obj_list[0]
-            res.append(obj.name)
-            res_tokens.append(tokenize_obj(obj))
+            res.append(obj)
             found_selected = obj is my_app.selected_object
             idx = 0
             while obj.next_object is not my_app.obj_list[0]:
-                res.append(obj.next_object.name)
-                res_tokens.append(tokenize_obj(obj.next_object))
+                res.append(obj.next_object)
                 if obj is not my_app.selected_object and not found_selected:
                     count += 1
                     idx += len(obj.name) + 1 # Newline character
@@ -610,9 +619,12 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
                     found_selected = True
                 obj = obj.next_object
 
+            self.lexer.add_objects(res)
             self.buffer.set_document(Document(
-                text = "\n".join(res), cursor_position = idx), True)
-            self.lexer.reset_tokens(res_tokens)
+                text = "\n".join([a.name for a in res]), cursor_position = idx), True)
+            # Reset obj_list_changed flag, now that we have had a chance to
+            # regenerate the sidebar document content
+            my_app.obj_list_changed = False
             return super().create_content(width, height)
 
     sidebar_control = myControl(
