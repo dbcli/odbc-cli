@@ -57,6 +57,18 @@ class sqlApp:
         # Added for efficiency (no need to traverse unless necessary).  Updated
         # from the main thread always, so no need for locking.
         self.obj_list_changed: bool = True
+        # This field presents the idx of the currently selected object in the
+        # list of objects where each object is counted with length of characters
+        # in name + 1 multiplicity.  So for example a list of objects
+        # A
+        # AB
+        # ABC
+        # ABCD
+        # where "ABC" is selected would present the index as 5 ([1+1] + [2+1]).
+        # This is used to track the cursor position in the sidebar document
+        # It is recorded here, rather than elsewhere because we can track it
+        # here far more efficiently (select_next, and select_previous).
+        self._selected_obj_idx = 0
         dsns = list(datasources().keys())
         if len(dsns) < 1:
             sys.exit("No datasources found ... exiting.")
@@ -89,16 +101,31 @@ class sqlApp:
 
     @selected_object.setter
     def selected_object(self, obj) -> None:
+        """ Avoid using / computationally expensive.
+            Instead try using select_next / select_previous if possible.
+        """
+        idx = 0
+        o = self.obj_list[0]
         self._selected_object = obj
+        while o is not self._selected_object:
+            if not o.next_object:
+                raise IndexError
+            idx += len(o.name) + 1
+            o = o.next_object
+        self._selected_obj_idx = idx
+
+    @property
+    def selected_object_idx(self):
+        return self._selected_obj_idx
 
     def select_next(self) -> None:
-        self.selected_object = self.selected_object.next_object
+        self._selected_object = self.selected_object.next_object
 
     def select_previous(self) -> None:
         obj = self.selected_object.parent if self.selected_object.parent is not None else self.obj_list[0]
         while obj.next_object is not self.selected_object:
             obj = obj.next_object
-        self.selected_object = obj
+        self._selected_object = obj
 
     @property
     def editing_mode(self) -> EditingMode:
@@ -240,14 +267,31 @@ class sqlApp:
         @kb.add("k", filter=sidebar_visible)
         def _(event):
             " Go to previous option. "
+            obj = self._selected_object
             self.select_previous()
+            inc = len(self.selected_object.name) + 1 # newline character
+            if obj is self.obj_list[0]:
+                idx = 0
+                while obj is not self._selected_object:
+                    if not obj.next_object:
+                        raise IndexError
+                    idx += len(obj.name) + 1
+                    obj = obj.next_object
+                self._selected_obj_idx = idx
+            else:
+                self._selected_obj_idx -= inc
 
         @kb.add("down", filter=sidebar_visible)
         @kb.add("c-n", filter=sidebar_visible)
         @kb.add("j", filter=sidebar_visible)
         def _(event):
             " Go to next option. "
+            inc = len(self.selected_object.name) + 1 # newline character
             self.select_next()
+            if self.selected_object is self.obj_list[0]:
+                self._selected_obj_idx = 0
+            else:
+                self._selected_obj_idx += inc
 
         @kb.add("enter", filter = sidebar_visible)
         def _(event):

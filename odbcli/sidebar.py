@@ -528,30 +528,6 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
         tokens.append(("class:sidebar.status" + sel + act, " " * 10))
         return tokens
 
-    def _buffer_pos_changed(buff):
-        """ When the cursor changes in the sidebar buffer, make sure the appropriate
-            database object is market as selected
-        """
-        # Only when this buffer has the focus.
-        try:
-            line_no = buff.document.cursor_position_row
-
-            if line_no < 0:  # When the cursor is above the inserted region.
-                raise IndexError
-
-            idx = 0
-            obj = my_app.obj_list[0]
-            while idx < line_no:
-                if not obj.next_object:
-                    raise IndexError
-                idx += 1
-                obj = obj.next_object
-
-            my_app.selected_object = obj
-
-        except IndexError:
-            pass
-
     search_buffer = Buffer(name = "sidebarsearchbuffer")
     search_field = SearchToolbar(
         search_buffer = search_buffer,
@@ -560,7 +536,6 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
     sidebar_buffer = Buffer(
         name = "sidebarbuffer",
         read_only = True,
-        on_cursor_position_changed = _buffer_pos_changed
     )
 
     class myLexer(Lexer):
@@ -602,26 +577,19 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
         def create_content(self, width: int, height: Optional[int]) -> UIContent:
             # Only traverse the obj_list if it has been expanded / collapsed
             if not my_app.obj_list_changed:
+                self.buffer.cursor_position = my_app.selected_object_idx
                 return super().create_content(width, height)
 
             res = []
-            count = 0
             obj = my_app.obj_list[0]
             res.append(obj)
-            found_selected = obj is my_app.selected_object
-            idx = 0
             while obj.next_object is not my_app.obj_list[0]:
                 res.append(obj.next_object)
-                if obj is not my_app.selected_object and not found_selected:
-                    count += 1
-                    idx += len(obj.name) + 1 # Newline character
-                else:
-                    found_selected = True
                 obj = obj.next_object
 
             self.lexer.add_objects(res)
             self.buffer.set_document(Document(
-                text = "\n".join([a.name for a in res]), cursor_position = idx), True)
+                text = "\n".join([a.name for a in res]), cursor_position = my_app.selected_object_idx), True)
             # Reset obj_list_changed flag, now that we have had a chance to
             # regenerate the sidebar document content
             my_app.obj_list_changed = False
