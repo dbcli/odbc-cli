@@ -48,7 +48,6 @@ class myDBObject:
         self.otype = otype
         self.level = level
         self.selected: bool = False
-        self.logger = getLogger(__name__)
 
     def _expand_internal(self) -> None:
         """
@@ -533,9 +532,23 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
         search_buffer = search_buffer,
         ignore_case = True
     )
+    def _buffer_pos_changed(buff):
+        """ This callback gets executed after cursor position changes.  Most
+            of the time we register a key-press (up / down), we change the
+            selected object and as a result of that the cursor changes.  By that
+            time we don't need to updat the selected object (cursor changed as
+            a result of the selected object being updated).  The one exception
+            is when searching the sidebar buffer.  When this happens the cursor
+            moves ahead of the selected object.  When that happens, here we
+            update the selected object to follow suit.
+        """
+        if buff.document.cursor_position_row != my_app.selected_object_idx[0]:
+            my_app.select(buff.document.cursor_position_row)
+
     sidebar_buffer = Buffer(
         name = "sidebarbuffer",
         read_only = True,
+        on_cursor_position_changed = _buffer_pos_changed
     )
 
     class myLexer(Lexer):
@@ -577,7 +590,7 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
         def create_content(self, width: int, height: Optional[int]) -> UIContent:
             # Only traverse the obj_list if it has been expanded / collapsed
             if not my_app.obj_list_changed:
-                self.buffer.cursor_position = my_app.selected_object_idx
+                self.buffer.cursor_position = my_app.selected_object_idx[1]
                 return super().create_content(width, height)
 
             res = []
@@ -589,11 +602,13 @@ def sql_sidebar(my_app: "sqlApp") -> Window:
 
             self.lexer.add_objects(res)
             self.buffer.set_document(Document(
-                text = "\n".join([a.name for a in res]), cursor_position = my_app.selected_object_idx), True)
+                text = "\n".join([a.name for a in res]), cursor_position = my_app.selected_object_idx[1]), True)
             # Reset obj_list_changed flag, now that we have had a chance to
             # regenerate the sidebar document content
             my_app.obj_list_changed = False
             return super().create_content(width, height)
+
+
 
     sidebar_control = myControl(
             buffer = sidebar_buffer,

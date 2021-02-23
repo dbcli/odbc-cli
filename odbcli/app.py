@@ -57,7 +57,9 @@ class sqlApp:
         # Added for efficiency (no need to traverse unless necessary).  Updated
         # from the main thread always, so no need for locking.
         self.obj_list_changed: bool = True
-        # This field presents the idx of the currently selected object in the
+        # This field is a list with two elements.  The first is the index of
+        # the currently selected object (0-indexed).  The second is the
+        # index of the currently selected object in the
         # list of objects where each object is counted with length of characters
         # in name + 1 multiplicity.  So for example a list of objects
         # A
@@ -68,7 +70,9 @@ class sqlApp:
         # This is used to track the cursor position in the sidebar document
         # It is recorded here, rather than elsewhere because we can track it
         # here far more efficiently (select_next, and select_previous).
-        self._selected_obj_idx = 0
+        # It is important that all methods of this class that manipulate the
+        # currently selected object also update this index.
+        self._selected_obj_idx = [0, 0]
         dsns = list(datasources().keys())
         if len(dsns) < 1:
             sys.exit("No datasources found ... exiting.")
@@ -103,16 +107,35 @@ class sqlApp:
     def selected_object(self, obj) -> None:
         """ Avoid using / computationally expensive.
             Instead try using select_next / select_previous if possible.
+            Will update _selected_obj_idx appropriately.
         """
+        cursor = 0
         idx = 0
         o = self.obj_list[0]
         self._selected_object = obj
         while o is not self._selected_object:
             if not o.next_object:
                 raise IndexError
-            idx += len(o.name) + 1
+            cursor += len(o.name) + 1
+            idx += 1
             o = o.next_object
-        self._selected_obj_idx = idx
+        self._selected_obj_idx = [idx, cursor]
+
+    def select(self, idx) -> None:
+        """ Select the [i]-th object in the list.  Will also update
+            _selected_obj_idx appropriately.
+        """
+        counter = 0
+        cursor = 0
+        o = self.obj_list[0]
+        while counter < idx:
+            if not o.next_object:
+                raise IndexError
+            counter += 1
+            cursor += len(o.name) + 1
+            o = o.next_object
+        self._selected_object = o
+        self._selected_obj_idx = [idx, cursor]
 
     @property
     def selected_object_idx(self):
@@ -272,14 +295,17 @@ class sqlApp:
             inc = len(self.selected_object.name) + 1 # newline character
             if obj is self.obj_list[0]:
                 idx = 0
+                cursor = 0
                 while obj is not self._selected_object:
                     if not obj.next_object:
                         raise IndexError
-                    idx += len(obj.name) + 1
+                    cursor += len(obj.name) + 1
+                    idx += 1
                     obj = obj.next_object
-                self._selected_obj_idx = idx
+                self._selected_obj_idx = [idx, cursor]
             else:
-                self._selected_obj_idx -= inc
+                self._selected_obj_idx[0] -= 1
+                self._selected_obj_idx[1] -= inc
 
         @kb.add("down", filter=sidebar_visible)
         @kb.add("c-n", filter=sidebar_visible)
@@ -289,9 +315,10 @@ class sqlApp:
             inc = len(self.selected_object.name) + 1 # newline character
             self.select_next()
             if self.selected_object is self.obj_list[0]:
-                self._selected_obj_idx = 0
+                self._selected_obj_idx = [0, 0]
             else:
-                self._selected_obj_idx += inc
+                self._selected_obj_idx[0] += 1
+                self._selected_obj_idx[1] += inc
 
         @kb.add("enter", filter = sidebar_visible)
         def _(event):
