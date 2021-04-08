@@ -38,7 +38,7 @@ class sqlConnection:
         self.username = username
         self.password = password
         self.logger = getLogger(__name__)
-        self.dbmetadata = DbMetadata()
+        self.dbmetadata = DbMetadata(self)
         self._quotechar = None
         self._search_escapechar = None
         self._search_escapepattern = None
@@ -450,8 +450,12 @@ class sqlConnection:
 
     def current_catalog(self) -> str:
         if self.conn.connected():
-            return self.conn.catalog_name
-        return None
+            with self._lock:
+                res = self.conn.catalog_name
+        else:
+            res = None
+
+        return res
 
     def connected(self) -> bool:
         return self.conn.connected()

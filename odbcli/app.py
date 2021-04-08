@@ -87,7 +87,8 @@ class sqlApp:
         # Loop over side-bar when moving past the element on the bottom
         self.obj_list[len(self.obj_list) - 1].next_object = self.obj_list[0]
         self._selected_object = self.obj_list[0]
-        self.completer = MssqlCompleter(smart_completion = True, get_conn = lambda: self.active_conn)
+        self.completer = MssqlCompleter(smart_completion = True,
+                get_conn = lambda: self.active_conn)
 
         self.application = self._create_application()
 
